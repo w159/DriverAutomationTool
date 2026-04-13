@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "apiBaseUrl": "https://dat-api.azurewebsites.net/api",
+  "apiBaseUrl": "https://api.driverautomationtool.com/api",
   "endpoints": {
     "health": "health",
     "driverReport": "telemetry/driver-report",
