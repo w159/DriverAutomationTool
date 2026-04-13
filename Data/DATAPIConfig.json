@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "apiBaseUrl": "https://func-dat-prod-fbpm3c.azurewebsites.net/api",
+  "apiBaseUrl": "https://dat-api.azurewebsites.net/api",
   "endpoints": {
     "health": "health",
     "driverReport": "telemetry/driver-report",
