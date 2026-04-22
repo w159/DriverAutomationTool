@@ -3,6 +3,9 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.11
+Update to Telemetry OS values
+
 Version 10.0.10
 New version released with increased functionality
 
