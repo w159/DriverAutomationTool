@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Content/Screenshots/dat_logo.png" alt="Driver Automation Tool" width="150" />
+  <img src="Content/Screenshots/Dat_Logo.png" alt="Driver Automation Tool" width="150" />
 </p>
 
 <h1 align="center">Driver Automation Tool</h1>
