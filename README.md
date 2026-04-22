@@ -7,7 +7,7 @@
 <p align="center">
   Enterprise-grade automation for downloading, extracting, and packaging OEM driver and BIOS update packages for ConfigMgr and Intune.
   <br /><br />
-  <a href="https://www.driverautomationtool.com"><strong>Website</strong></a> · <a href="https://www.driverautomationtool.com/setup"><strong>Setup Guide</strong></a> · <a href="https://www.driverautomationtool.com/reports"><strong>Reports</strong></a>
+  <a href="https://www.driverautomationtool.com"><strong>Website</strong></a> · <a href="https://www.driverautomationtool.com/setup-guide"><strong>Setup Guide</strong></a> · <a href="https://www.driverautomationtool.com/reports"><strong>Reports</strong></a>
   <br /><br />
   A free community tool — created by <strong>Maurice Daly</strong>
 </p>
@@ -102,7 +102,7 @@ On first launch, review and accept the End User License Agreement.
 
 ### 5. Configure
 
-Set your storage paths, select your deployment platform, and configure proxy settings if needed. See the [Setup Guide](https://www.driverautomationtool.com/setup) for detailed configuration instructions.
+Set your storage paths, select your deployment platform, and configure proxy settings if needed. See the [Setup Guide](https://www.driverautomationtool.com/setup-guide) for detailed configuration instructions.
 
 ## Platform Configuration
 
@@ -294,7 +294,7 @@ The tool supports both light and dark themes with instant runtime switching.
 ## Links
 
 - 🌐 [Driver Automation Tool Website](https://www.driverautomationtool.com)
-- 📖 [Setup Guide](https://www.driverautomationtool.com/setup)
+- 📖 [Setup Guide](https://www.driverautomationtool.com/setup-guide)
 - 📊 [Reports & Statistics](https://www.driverautomationtool.com/reports)
 - ℹ️ [About](https://www.driverautomationtool.com/about)
 
