@@ -5036,7 +5036,7 @@ $btn_Build.Add_Click({
                     $platform = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { '' }
                     $isIntune  = $platform -match 'Intune'
                     $isCM      = $platform -match 'ConfigMgr|SCCM|MECM'
-                    $selectedOS   = if ($null -ne $cmb_OperatingSystem.SelectedItem) { $cmb_OperatingSystem.SelectedItem.Content } else { 'Windows 10' }
+                    $selectedOS   = if ($null -ne $cmb_OperatingSystem.SelectedItem) { $cmb_OperatingSystem.SelectedItem.Content } else { 'Windows 11' }
                     $selectedArch = if ($null -ne $cmb_Architecture.SelectedItem)     { $cmb_Architecture.SelectedItem.Content }     else { 'x64' }
                     $modelKeys = @()
                     if ($null -ne $script:SelectedModels) {
@@ -12554,7 +12554,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.10"
+$script:versionString = "v10.0.11"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
