@@ -7553,10 +7553,9 @@ function Get-DATFlash64W {
     <#
     .SYNOPSIS
         Ensures Flash64W.exe is available in a target directory.
-        If not already present, downloads the standalone Flash64W ZPE package from Dell,
+        If not already present, downloads the Flash64W ZIP package from Dell,
         extracts it, and copies Flash64W.exe to the destination.
-        Dell _ZPE.exe files are WinZip Self-Extractor archives; extraction is attempted with
-        the '-s -e="<path>"' switches. Falls back to 7-Zip and then Expand-Archive (ZIP).
+        The ZIP contains Flash64W.exe in a subfolder.
     .PARAMETER DestinationDir
         Directory where Flash64W.exe should be placed.
     .OUTPUTS
@@ -7579,92 +7578,51 @@ function Get-DATFlash64W {
         return $true
     }
 
-    # Flash64W.exe not found -- download the standalone Dell Flash64W ZPE package
-    $flash64Url   = 'https://dl.dell.com/FOLDER07369004M/5/Flahs64%20External%20Release%20Ver3.3.13_ZPE.exe'
+    # Flash64W.exe not found -- download the Dell Flash64W ZIP package
+    $flash64Url   = 'https://dl.dell.com/FOLDER12288556M/1/FlashVer3.3.28.zip'
     $tempDir      = Join-Path $env:TEMP 'DAT_Flash64W'
-    $zpeFile      = Join-Path $tempDir 'Flash64W_ZPE.exe'
-    $zpeExtract   = Join-Path $tempDir 'Extracted'
+    $zipFile      = Join-Path $tempDir 'FlashVer3.3.28.zip'
+    $zipExtract   = Join-Path $tempDir 'Extracted'
 
-    Write-DATLogEntry -Value "[Flash64W] Flash64W.exe not found -- downloading standalone package" -Severity 1
+    Write-DATLogEntry -Value "[Flash64W] Flash64W.exe not found -- downloading package" -Severity 1
     Write-DATLogEntry -Value "[Flash64W] URL: $flash64Url" -Severity 1
 
     if (-not (Test-Path $tempDir)) { New-Item -Path $tempDir -ItemType Directory -Force | Out-Null }
-    if (-not (Test-Path $zpeExtract)) { New-Item -Path $zpeExtract -ItemType Directory -Force | Out-Null }
+    if (-not (Test-Path $zipExtract)) { New-Item -Path $zipExtract -ItemType Directory -Force | Out-Null }
 
-    # Download
+    # Download (Dell requires browser-like headers)
     try {
         $proxyParams = Get-DATWebRequestProxy
         if ($proxyParams -isnot [hashtable]) { $proxyParams = @{} }
-        Invoke-WebRequest -Uri $flash64Url -OutFile $zpeFile -UseBasicParsing -TimeoutSec 120 @proxyParams -ErrorAction Stop
-        Write-DATLogEntry -Value "[Flash64W] Download complete: $([math]::Round((Get-Item $zpeFile).Length / 1KB, 1)) KB" -Severity 1
+        $webHeaders = @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        Invoke-WebRequest -Uri $flash64Url -OutFile $zipFile -UseBasicParsing -TimeoutSec 120 -Headers $webHeaders @proxyParams -ErrorAction Stop
+        Write-DATLogEntry -Value "[Flash64W] Download complete: $([math]::Round((Get-Item $zipFile).Length / 1KB, 1)) KB" -Severity 1
     } catch {
         Write-DATLogEntry -Value "[Flash64W] Download failed: $($_.Exception.Message)" -Severity 3
         return $false
     }
 
-    # Attempt 1: WinZip Self-Extractor switches (-s -e="<path>")
+    # Extract ZIP and locate Flash64W.exe (may be in a subfolder)
     $extracted = $false
     try {
-        Write-DATLogEntry -Value "[Flash64W] Attempting WinZip SFX extraction (-s -e)" -Severity 1
-        $proc = Start-Process -FilePath $zpeFile `
-            -ArgumentList "-s", "-e=`"$zpeExtract`"" `
-            -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
-        Write-DATLogEntry -Value "[Flash64W] SFX exit code: $($proc.ExitCode)" -Severity 1
-        $flash64File = Get-ChildItem -Path $zpeExtract -Filter 'Flash64W.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        Write-DATLogEntry -Value "[Flash64W] Extracting ZIP archive" -Severity 1
+        Expand-Archive -Path $zipFile -DestinationPath $zipExtract -Force -ErrorAction Stop
+        $flash64File = Get-ChildItem -Path $zipExtract -Filter 'Flash64W.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($flash64File) { $extracted = $true }
     } catch {
-        Write-DATLogEntry -Value "[Flash64W] WinZip SFX extraction failed: $($_.Exception.Message)" -Severity 2
+        Write-DATLogEntry -Value "[Flash64W] ZIP extraction failed: $($_.Exception.Message)" -Severity 3
     }
 
-    # Attempt 2: 7-Zip (if installed)
-    if (-not $extracted) {
-        $7zipExe = $null
-        foreach ($candidate in @(
-            (Join-Path $env:ProgramFiles '7-Zip\7z.exe'),
-            (Join-Path ${env:ProgramFiles(x86)} '7-Zip\7z.exe')
-        )) {
-            if (Test-Path $candidate) { $7zipExe = $candidate; break }
-        }
-        if (-not $7zipExe) {
-            try { $7zipExe = (Get-Command '7z.exe' -ErrorAction Stop).Source } catch {}
-        }
-        if ($7zipExe) {
-            try {
-                Write-DATLogEntry -Value "[Flash64W] Attempting 7-Zip extraction" -Severity 1
-                $proc = Start-Process -FilePath $7zipExe `
-                    -ArgumentList "e `"$zpeFile`" -o`"$zpeExtract`" Flash64W.exe -r -y" `
-                    -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
-                Write-DATLogEntry -Value "[Flash64W] 7-Zip exit code: $($proc.ExitCode)" -Severity 1
-                $flash64File = Get-ChildItem -Path $zpeExtract -Filter 'Flash64W.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($flash64File) { $extracted = $true }
-            } catch {
-                Write-DATLogEntry -Value "[Flash64W] 7-Zip extraction failed: $($_.Exception.Message)" -Severity 2
-            }
-        }
-    }
-
-    # Attempt 3: Treat as ZIP with Expand-Archive (some Dell ZPE packages are plain ZIPs)
-    if (-not $extracted) {
-        try {
-            Write-DATLogEntry -Value "[Flash64W] Attempting Expand-Archive (ZIP fallback)" -Severity 1
-            Expand-Archive -Path $zpeFile -DestinationPath $zpeExtract -Force -ErrorAction Stop
-            $flash64File = Get-ChildItem -Path $zpeExtract -Filter 'Flash64W.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($flash64File) { $extracted = $true }
-        } catch {
-            Write-DATLogEntry -Value "[Flash64W] Expand-Archive fallback failed: $($_.Exception.Message)" -Severity 2
-        }
+    if ($extracted -and $flash64File) {
+        Copy-Item -Path $flash64File.FullName -Destination $DestinationDir -Force
+        Write-DATLogEntry -Value "[Flash64W] Flash64W.exe v3.3.28 copied to $DestinationDir" -Severity 1
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        return $true
     }
 
     # Clean up temp download
     Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-
-    if ($extracted -and $flash64File) {
-        Copy-Item -Path $flash64File.FullName -Destination $DestinationDir -Force
-        Write-DATLogEntry -Value "[Flash64W] Flash64W.exe v3.3.13 copied to $DestinationDir" -Severity 1
-        return $true
-    }
-
-    Write-DATLogEntry -Value "[Flash64W] All extraction attempts failed -- Flash64W.exe could not be obtained" -Severity 3
+    Write-DATLogEntry -Value "[Flash64W] Extraction failed -- Flash64W.exe could not be obtained" -Severity 3
     return $false
 }
 
