@@ -135,6 +135,36 @@ if (-not (Test-Path $RegPath)) {
 }
 New-ItemProperty -Path $RegPath -Name "InstallDirectory" -Value $AppRoot -PropertyType String -Force | Out-Null
 
+# Create desktop shortcut (idempotent — only creates if missing or pointing to wrong location)
+$desktopPath = [Environment]::GetFolderPath('Desktop')
+$shortcutPath = Join-Path $desktopPath 'Driver Automation Tool.lnk'
+$launcherPath = Join-Path $AppRoot 'Start-DriverAutomationTool.ps1'
+$iconPath = Join-Path $AppRoot 'Branding\DATLogo.ico'
+$needsShortcut = $true
+if (Test-Path $shortcutPath) {
+    $existing = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+    if ($existing.Arguments -like "*$launcherPath*") {
+        $needsShortcut = $false
+    }
+}
+if ($needsShortcut) {
+    $wshShell = New-Object -ComObject WScript.Shell
+    $shortcut = $wshShell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $shortcut.Arguments = "-ExecutionPolicy Bypass -File `"$launcherPath`""
+    $shortcut.WorkingDirectory = $AppRoot
+    $shortcut.Description = 'Driver Automation Tool'
+    if (Test-Path $iconPath) {
+        $shortcut.IconLocation = "$iconPath,0"
+    }
+    $shortcut.Save()
+    # Set "Run as administrator" flag (byte 21, bit 0x20 in the .lnk binary)
+    $bytes = [System.IO.File]::ReadAllBytes($shortcutPath)
+    $bytes[21] = $bytes[21] -bor 0x20
+    [System.IO.File]::WriteAllBytes($shortcutPath, $bytes)
+    Write-Host "Desktop shortcut created: $shortcutPath" -ForegroundColor Green
+}
+
 # Launch the application
 $MainApp = Join-Path $AppRoot "UI\MainApplication.ps1"
 & $MainApp -Theme $Theme

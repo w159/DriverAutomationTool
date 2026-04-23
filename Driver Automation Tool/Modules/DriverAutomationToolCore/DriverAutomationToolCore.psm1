@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.15.0
+     Version:       10.0.16.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.15.0"
+[version]$global:ScriptRelease = "10.0.16.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -3249,7 +3249,27 @@ function Update-DATApplication {
                 continue
             }
             $destPath = Join-Path $InstallDirectory $item.Name
-            Copy-Item -Path $item.FullName -Destination $destPath -Recurse -Force
+            if ($item.PSIsContainer) {
+                # For folders, copy contents file-by-file to avoid Copy-Item nesting
+                # the source folder inside the existing destination folder.
+                if (-not (Test-Path $destPath)) {
+                    New-Item -Path $destPath -ItemType Directory -Force | Out-Null
+                }
+                $sourceFiles = Get-ChildItem -Path $item.FullName -Recurse -File
+                foreach ($srcFile in $sourceFiles) {
+                    $relativePath = $srcFile.FullName.Substring($item.FullName.Length)
+                    $destFile = Join-Path $destPath $relativePath
+                    $destFileDir = Split-Path -Parent $destFile
+                    if (-not (Test-Path $destFileDir)) {
+                        New-Item -Path $destFileDir -ItemType Directory -Force | Out-Null
+                    }
+                    Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+                }
+                Write-DATLogEntry -Value "[Update] Replaced folder: $($item.Name) ($($sourceFiles.Count) files)" -Severity 1
+            } else {
+                Copy-Item -Path $item.FullName -Destination $destPath -Force
+                Write-DATLogEntry -Value "[Update] Replaced file: $($item.Name)" -Severity 1
+            }
         }
 
         Write-DATLogEntry -Value "[Update] Update applied successfully. Backup saved to $backupDir" -Severity 1

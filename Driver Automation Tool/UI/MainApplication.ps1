@@ -12062,6 +12062,7 @@ $script:btn_ApplyUpdate.Add_Click({
             $sourceItems = Get-ChildItem -Path $sourceDir
             $copiedCount = 0
             $skippedCount = 0
+            $filesCopied = 0
             foreach ($item in $sourceItems) {
                 if ($item.PSIsContainer -and $item.Name -in $preserveFolders) {
                     $destFolder = Join-Path $InstallDir $item.Name
@@ -12076,19 +12077,37 @@ $script:btn_ApplyUpdate.Add_Click({
                     continue
                 }
                 $destPath = Join-Path $InstallDir $item.Name
-                Copy-Item -Path $item.FullName -Destination $destPath -Recurse -Force
-                $copiedCount++
                 if ($item.PSIsContainer) {
-                    $childCount = (Get-ChildItem -Path $item.FullName -Recurse -File).Count
-                    Write-UpdateLog "Replaced folder: $($item.Name) ($childCount files)"
+                    # For folders, merge contents into existing destination to avoid
+                    # Copy-Item nesting the source folder inside the existing one.
+                    if (-not (Test-Path $destPath)) {
+                        New-Item -Path $destPath -ItemType Directory -Force | Out-Null
+                    }
+                    $sourceFiles = Get-ChildItem -Path $item.FullName -Recurse -File
+                    foreach ($srcFile in $sourceFiles) {
+                        $relativePath = $srcFile.FullName.Substring($item.FullName.Length)
+                        $destFile = Join-Path $destPath $relativePath
+                        $destFileDir = Split-Path -Parent $destFile
+                        if (-not (Test-Path $destFileDir)) {
+                            New-Item -Path $destFileDir -ItemType Directory -Force | Out-Null
+                        }
+                        Copy-Item -Path $srcFile.FullName -Destination $destFile -Force
+                        $filesCopied++
+                        Write-UpdateLog "  $($item.Name)$relativePath"
+                    }
+                    $copiedCount++
+                    Write-UpdateLog "Replaced folder: $($item.Name) ($($sourceFiles.Count) files)"
                 } else {
+                    Copy-Item -Path $item.FullName -Destination $destPath -Force
+                    $copiedCount++
+                    $filesCopied++
                     Write-UpdateLog "Replaced file: $($item.Name)"
                 }
             }
 
             # Clean up temp
             Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-            Write-UpdateLog "Update applied -- $copiedCount items replaced, $skippedCount preserved"
+            Write-UpdateLog "Update applied -- $copiedCount items replaced ($filesCopied files), $skippedCount preserved"
 
             return @{
                 Success   = $true
@@ -13054,7 +13073,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.15"
+$script:versionString = "v10.0.16"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
