@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.10.0
+     Version:       10.0.14.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.10.0"
+[version]$global:ScriptRelease = "10.0.14.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -544,13 +544,15 @@ function Get-DATOEMModelInfo {
                     $MicrosoftModels = $MSFiltered | Group-Object -Property Model
                     foreach ($MSModelGroup in $MicrosoftModels) {
                         $products = ($MSModelGroup.Group | Select-Object -ExpandProperty Product -Unique) -join ','
+                        $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                        $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
                         $OEMSupportedModels += [PSCustomObject]@{
                             OEM        = "Microsoft"
                             Model      = $MSModelGroup.Name
                             Baseboards = $products
                             OS         = $WindowsVersion
                             'OS Build' = $WindowsBuild
-                            Version    = ''
+                            Version    = $msVersion
                         }
                     }
                 } catch {
@@ -1105,16 +1107,14 @@ function Invoke-DATDriverFilePackaging {
         [string]$CustomDriverPath
     )
 
-    # Detect UNC paths -- DISM cannot create WIMs on network shares.
-    # Use a local temp folder for extraction + WIM creation, then copy to UNC.
-    $isUNC = $Destination -match '^\\\\' -or $Destination.StartsWith('\\')
-    $localWorkDir = $Destination
-    if ($isUNC) {
-        $localWorkDir = Join-Path $global:TempDirectory "UNC_Build\$OEM\$Model"
-        if (Test-Path $localWorkDir) { Remove-Item $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue }
-        New-Item -Path $localWorkDir -ItemType Directory -Force | Out-Null
-        Write-DATLogEntry -Value "[$OEM] UNC destination detected -- using local temp: $localWorkDir" -Severity 1
-    }
+    # Always use the temp directory for extraction and WIM creation, then copy the
+    # final WIM to the package destination.  This keeps the Package path clean and
+    # ensures temp files are cleaned up automatically.  Also handles UNC destinations
+    # since DISM cannot create WIMs on network shares.
+    $localWorkDir = Join-Path $global:TempDirectory "Build\$OEM\$Model"
+    if (Test-Path $localWorkDir) { Remove-Item $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -Path $localWorkDir -ItemType Directory -Force | Out-Null
+    Write-DATLogEntry -Value "[$OEM] Using local temp working directory: $localWorkDir" -Severity 1
 
     $DriverFolder = Join-Path -Path $localWorkDir -ChildPath "$OEM\$Model\$OS\Extracted"
     if (-not (Test-Path -Path $DriverFolder)) {
@@ -1250,20 +1250,16 @@ function Invoke-DATDriverFilePackaging {
             Measure-Object -Property Length -Sum).Sum
         $requiredSpaceGB = [math]::Round($driverFolderSize / 1GB, 2)
         $pkgDrive = [System.IO.Path]::GetPathRoot($localWorkDir)
-        if ($pkgDrive -match '^\\\\') {
-            Write-DATLogEntry -Value "[$OEM] Disk space check -- UNC path detected; skipping free space validation" -Severity 1
-        } else {
-            $pkgDriveInfo = [System.IO.DriveInfo]::new($pkgDrive)
-            $pkgFreeGB = [math]::Round($pkgDriveInfo.AvailableFreeSpace / 1GB, 2)
-            Write-DATLogEntry -Value "[$OEM] Disk space check -- Drive: $pkgDrive Free: $pkgFreeGB GB, Required: $requiredSpaceGB GB" -Severity 1
+        $pkgDriveInfo = [System.IO.DriveInfo]::new($pkgDrive)
+        $pkgFreeGB = [math]::Round($pkgDriveInfo.AvailableFreeSpace / 1GB, 2)
+        Write-DATLogEntry -Value "[$OEM] Disk space check -- Drive: $pkgDrive Free: $pkgFreeGB GB, Required: $requiredSpaceGB GB" -Severity 1
 
-            if ($pkgFreeGB -lt $requiredSpaceGB) {
-                $errorMsg = "Insufficient disk space on $pkgDrive for WIM creation. Free: $pkgFreeGB GB, Required: $requiredSpaceGB GB (based on extracted driver size for $OEM $Model)."
-                Write-DATLogEntry -Value "[Error] - $errorMsg" -Severity 3 -UpdateUI
-                Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
-                Set-DATRegistryValue -Name "RunningMessage" -Value $errorMsg -Type String
-                throw $errorMsg
-            }
+        if ($pkgFreeGB -lt $requiredSpaceGB) {
+            $errorMsg = "Insufficient disk space on $pkgDrive for WIM creation. Free: $pkgFreeGB GB, Required: $requiredSpaceGB GB (based on extracted driver size for $OEM $Model)."
+            Write-DATLogEntry -Value "[Error] - $errorMsg" -Severity 3 -UpdateUI
+            Set-DATRegistryValue -Name "RunningState" -Value "Error" -Type String
+            Set-DATRegistryValue -Name "RunningMessage" -Value $errorMsg -Type String
+            throw $errorMsg
         }
 
         Set-DATRegistryValue -Name "RunningMessage" -Value "Creating WIM package for $OEM $Model..." -Type String
@@ -1628,23 +1624,22 @@ function Invoke-DATDriverFilePackaging {
             } # end DISM else block
 
             if ($effectiveExitCode -eq 0) {
-                # If we built on local temp for a UNC destination, copy the WIM to the network share
-                if ($isUNC) {
-                    $uncDriverMountFolder = Join-Path -Path $Destination -ChildPath "Packaged\$OEM\$Model\$OS"
-                    if (-not (Test-Path -Path $uncDriverMountFolder)) {
-                        New-Item -Path $uncDriverMountFolder -ItemType Directory -Force | Out-Null
-                    }
-                    $uncWimFile = Join-Path -Path $uncDriverMountFolder -ChildPath "DriverPackage.wim"
-                    Write-DATLogEntry -Value "[$OEM] Copying WIM to UNC destination: $uncWimFile" -Severity 1 -UpdateUI
-                    Set-DATRegistryValue -Name "RunningMessage" -Value "Copying WIM to network share - $OEM $Model..." -Type String
-                    Copy-Item -Path $WimFile -Destination $uncWimFile -Force
-                    Write-DATLogEntry -Value "[$OEM] WIM copied to UNC destination successfully" -Severity 1
-                    $WimFile = $uncWimFile
-
-                    # Clean up local temp working directory
-                    Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
-                    Write-DATLogEntry -Value "[$OEM] Local temp working directory cleaned up" -Severity 1
+                # Stage WIM in the temp directory (not the package destination).
+                # Only the final ConfigMgr/Intune/standalone package should be in the Package Storage Path.
+                $destDriverMountFolder = Join-Path -Path $global:TempDirectory -ChildPath "Packaged\$OEM\$Model\$OS"
+                if (-not (Test-Path -Path $destDriverMountFolder)) {
+                    New-Item -Path $destDriverMountFolder -ItemType Directory -Force | Out-Null
                 }
+                $destWimFile = Join-Path -Path $destDriverMountFolder -ChildPath "DriverPackage.wim"
+                Write-DATLogEntry -Value "[$OEM] Staging WIM to temp directory: $destWimFile" -Severity 1 -UpdateUI
+                Set-DATRegistryValue -Name "RunningMessage" -Value "Staging WIM - $OEM $Model..." -Type String
+                Copy-Item -Path $WimFile -Destination $destWimFile -Force
+                Write-DATLogEntry -Value "[$OEM] WIM staged in temp directory successfully" -Severity 1
+                $WimFile = $destWimFile
+
+                # Clean up local temp working directory (extracted files + temp WIM)
+                Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+                Write-DATLogEntry -Value "[$OEM] Temp working directory cleaned up: $localWorkDir" -Severity 1
 
                 $wimSize = [math]::Round((Get-Item $WimFile).Length / 1MB, 2)
                 Set-DATRegistryValue -Name "PackagedDriverPath" -Value "$WimFile" -Type String
@@ -1669,9 +1664,10 @@ function Invoke-DATDriverFilePackaging {
                 Write-DATLogEntry -Value "[Error] - WIM creation failed: $($_.Exception.Message)" -Severity 3 -UpdateUI
                 Set-DATRegistryValue -Name "RunningMessage" -Value "WIM creation error - $OEM $Model" -Type String
             }
-            # Clean up local temp on failure for UNC builds
-            if ($isUNC -and (Test-Path $localWorkDir)) {
+            # Clean up temp working directory on failure
+            if (Test-Path $localWorkDir) {
                 Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+                Write-DATLogEntry -Value "[$OEM] Temp working directory cleaned up after failure" -Severity 2
             }
             throw
         }
@@ -1913,6 +1909,7 @@ function New-DATConfigMgrPkg {
         [Parameter(Mandatory)][string]$Version,
         [ValidateSet('Drivers','BIOS')][string]$PackageType = 'Drivers',
         [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints,
         [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
         [switch]$ForceUpdate
     )
@@ -2001,6 +1998,30 @@ function New-DATConfigMgrPkg {
                 }
             }
 
+            # Also redistribute to selected individual distribution points
+            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                foreach ($dpServer in $DistributionPoints) {
+                    try {
+                        Write-DATLogEntry -Value "- [ConfigMgr] Redistributing package $pkgId to DP: $dpServer" -Severity 1
+                        $dpNalPath = Get-WmiObject -ComputerName $SiteServer -Namespace $smsNamespace `
+                            -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
+                            -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
+                        if ($dpNalPath) {
+                            $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
+                            $newDP.PackageID = $pkgId
+                            $newDP.ServerNALPath = $dpNalPath
+                            $newDP.SiteCode = $SiteCode
+                            $newDP.Put() | Out-Null
+                            Write-DATLogEntry -Value "- [ConfigMgr] Content redistributed to DP $dpServer" -Severity 1
+                        } else {
+                            Write-DATLogEntry -Value "[Warning] - DP '$dpServer' NALPath not found" -Severity 2
+                        }
+                    } catch {
+                        Write-DATLogEntry -Value "[Warning] - Failed to redistribute to DP '$dpServer': $($_.Exception.Message)" -Severity 2
+                    }
+                }
+            }
+
             return $true
         }
 
@@ -2084,7 +2105,7 @@ function New-DATConfigMgrPkg {
             Write-DATLogEntry -Value "[Warning] - Failed to move package to folder: $($_.Exception.Message)" -Severity 2
         }
 
-        # --- Stage 5: Distribute content to selected DP groups ---
+        # --- Stage 5: Distribute content to selected DP groups and individual DPs ---
         if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
             foreach ($dpGroup in $DistributionPointGroups) {
                 try {
@@ -2101,6 +2122,29 @@ function New-DATConfigMgrPkg {
                     }
                 } catch {
                     Write-DATLogEntry -Value "[Warning] - Failed to distribute to '$dpGroup': $($_.Exception.Message)" -Severity 2
+                }
+            }
+        }
+
+        if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+            foreach ($dpServer in $DistributionPoints) {
+                try {
+                    Write-DATLogEntry -Value "- [ConfigMgr] Distributing package $packageId to DP: $dpServer" -Severity 1
+                    $dpNalPath = Get-WmiObject -ComputerName $SiteServer -Namespace $smsNamespace `
+                        -Query "SELECT NALPath FROM SMS_DistributionPointInfo WHERE ServerName = '$($dpServer -replace "'","''")'" `
+                        -ErrorAction Stop | Select-Object -First 1 -ExpandProperty NALPath
+                    if ($dpNalPath) {
+                        $newDP = ([WmiClass]"\\$SiteServer\$($smsNamespace):SMS_DistributionPoint").CreateInstance()
+                        $newDP.PackageID = $packageId
+                        $newDP.ServerNALPath = $dpNalPath
+                        $newDP.SiteCode = $SiteCode
+                        $newDP.Put() | Out-Null
+                        Write-DATLogEntry -Value "- [ConfigMgr] Content distributed to DP $dpServer" -Severity 1
+                    } else {
+                        Write-DATLogEntry -Value "[Warning] - DP '$dpServer' not found" -Severity 2
+                    }
+                } catch {
+                    Write-DATLogEntry -Value "[Warning] - Failed to distribute to DP '$dpServer': $($_.Exception.Message)" -Severity 2
                 }
             }
         }
@@ -2193,6 +2237,7 @@ function Start-DATModelProcessing {
         [string]$SiteCode,
         [string]$PackageType = 'Drivers',
         [string[]]$DistributionPointGroups,
+        [string[]]$DistributionPoints,
         [string]$DistributionPriority = 'Normal',
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
@@ -2331,8 +2376,8 @@ function Start-DATModelProcessing {
                         }
                     }
                 } else {
-                    # Download Only -- check if WIM already exists from today
-                    $existingWimPath = Join-Path $PackagePath "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                    # Download Only / WIM Package Only -- check if WIM already exists from today
+                    $existingWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
                     if ((Test-Path $existingWimPath) -and (Get-Item $existingWimPath).LastWriteTime.Date -eq (Get-Date).Date -and -not $modelForceUpdate) {
                         Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED download -- driver WIM already created today: $existingWimPath" -Severity 1
                         Set-DATRegistryValue -Name "RunningMessage" -Value "Skipped (exists): $oem $modelName" -Type String
@@ -2358,7 +2403,7 @@ function Start-DATModelProcessing {
 
                 # Intune: Create and upload Win32 app after packaging
                 if ($RunningMode -eq 'Intune') {
-                    $wimPath = Join-Path $PackagePath "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
                     if (Test-Path $wimPath) {
                         Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting Intune pipeline for $oem $modelName" -Severity 1
                         Set-DATRegistryValue -Name "RunningMessage" -Value "Creating Intune package: $oem $modelName..." -Type String
@@ -2404,7 +2449,7 @@ function Start-DATModelProcessing {
                             $drvHash = if ($intuneWinFile) { Get-DATPackageHash -FilePath $intuneWinFile.FullName } else { $null }
                             $drvSize = if ($intuneWinFile) { $intuneWinFile.Length } else { 0 }
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
-                                -OSVersion $windowsVersion -OSArchitecture $arch -Platform 'Intune' `
+                                -OSVersion "$windowsVersion $windowsBuild" -OSArchitecture $arch -Platform 'Intune' `
                                 -Status 'Success' -PackageSize $drvSize -PackageHash $drvHash
                         } catch {
                             Write-DATLogEntry -Value "[Telemetry] Driver report failed: $($_.Exception.Message)" -Severity 2
@@ -2416,7 +2461,7 @@ function Start-DATModelProcessing {
 
                 # ConfigMgr: Create driver package on site server after packaging
                 if ($RunningMode -eq 'Configuration Manager') {
-                    $wimPath = Join-Path $PackagePath "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                    $wimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
                     if (Test-Path $wimPath) {
                         if (-not [string]::IsNullOrEmpty($SiteServer) -and -not [string]::IsNullOrEmpty($SiteCode)) {
                             Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting ConfigMgr driver pipeline for $oem $modelName" -Severity 1
@@ -2442,6 +2487,9 @@ function Start-DATModelProcessing {
                             if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
                                 $cmParams['DistributionPointGroups'] = $DistributionPointGroups
                             }
+                            if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                                $cmParams['DistributionPoints'] = $DistributionPoints
+                            }
                             if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
                             $cmResult = New-DATConfigMgrPkg @cmParams
 
@@ -2453,7 +2501,7 @@ function Start-DATModelProcessing {
                                     $drvHash = Get-DATPackageHash -FilePath $wimPath
                                     $drvSize = if (Test-Path $wimPath) { (Get-Item $wimPath).Length } else { 0 }
                                     Send-DATDriverReport -Manufacturer $oem -Model $modelName `
-                                        -OSVersion $windowsVersion -OSArchitecture $arch `
+                                        -OSVersion "$windowsVersion $windowsBuild" -OSArchitecture $arch `
                                         -Platform 'ConfigMgr' -Status 'Success' `
                                         -PackageVersion $version -PackageSize $drvSize -PackageHash $drvHash
                                 } catch {
@@ -2481,15 +2529,38 @@ function Start-DATModelProcessing {
                     }
                 }
 
+                # WIM Package Only: copy the final WIM from temp staging to the Package Storage Path
+                if ($RunningMode -eq 'WIM Package Only') {
+                    $wimStagingPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                    if (Test-Path $wimStagingPath) {
+                        $wimFinalDir = Join-Path $PackagePath "$oem\$modelName\$windowsVersion $windowsBuild"
+                        if (-not (Test-Path $wimFinalDir)) { New-Item -Path $wimFinalDir -ItemType Directory -Force | Out-Null }
+                        $wimFinalPath = Join-Path $wimFinalDir "DriverPackage.wim"
+                        Copy-Item -Path $wimStagingPath -Destination $wimFinalPath -Force
+                        Write-DATLogEntry -Value "[$currentIndex/$totalModels] WIM package stored: $wimFinalPath" -Severity 1
+                        # Clean up staging WIM
+                        Remove-Item -Path $wimStagingPath -Force -ErrorAction SilentlyContinue
+                        $wimParent = Split-Path $wimStagingPath -Parent
+                        if ((Test-Path $wimParent) -and @(Get-ChildItem -Path $wimParent -Force -ErrorAction SilentlyContinue).Count -eq 0) {
+                            Remove-Item -Path $wimParent -Recurse -Force -ErrorAction SilentlyContinue
+                        }
+                        $script:driverPipelineSuccess = $true
+                    }
+                }
+
                 # Telemetry: driver report for Download Only / WIM Only modes (no Intune or ConfigMgr)
                 if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
                     try {
-                        $dlWimPath = Join-Path $PackagePath "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                        # WIM Package Only moves the WIM to PackagePath; Download Only keeps it in temp staging
+                        $dlWimPath = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                        if (-not (Test-Path $dlWimPath)) {
+                            $dlWimPath = Join-Path $PackagePath "$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                        }
                         if (Test-Path $dlWimPath) {
                             $drvHash = Get-DATPackageHash -FilePath $dlWimPath
                             $drvSize = (Get-Item $dlWimPath).Length
                             Send-DATDriverReport -Manufacturer $oem -Model $modelName `
-                                -OSVersion $windowsVersion -OSArchitecture $arch `
+                                -OSVersion "$windowsVersion $windowsBuild" -OSArchitecture $arch `
                                 -Platform $RunningMode -Status 'Success' `
                                 -PackageSize $drvSize -PackageHash $drvHash
                         }
@@ -2500,7 +2571,7 @@ function Start-DATModelProcessing {
 
                 # Count driver package success -- check if the WIM was produced (Download Only)
                 # or if it was successfully consumed by the Intune/ConfigMgr pipeline
-                $drvWimCheck = Join-Path $PackagePath "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
+                $drvWimCheck = Join-Path $global:TempDirectory "Packaged\$oem\$modelName\$windowsVersion $windowsBuild\DriverPackage.wim"
                 if ((Test-Path $drvWimCheck) -or $script:driverPipelineSuccess) { $driverPackageSuccessCount++ }
                 $script:driverPipelineSuccess = $false
                 } # end if (-not $skipDriverDownload)
@@ -2508,6 +2579,10 @@ function Start-DATModelProcessing {
 
             # ── BIOS processing (when PackageType is 'BIOS' or 'All') ──────────────
             if ($PackageType -in @('BIOS', 'All')) {
+                # Microsoft Surface BIOS updates are delivered via driver injection -- skip BIOS packaging
+                if ($oem -eq 'Microsoft') {
+                    Write-DATLogEntry -Value "[$currentIndex/$totalModels] SKIPPED -- Microsoft Surface BIOS updates are handled via driver injection, no separate BIOS package required" -Severity 1
+                } else {
                 Set-DATRegistryValue -Name "PackagePhase" -Value "BIOS" -Type String
                 Write-DATLogEntry -Value "[$currentIndex/$totalModels] Starting BIOS processing for $oem $modelName" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "[$currentIndex/$totalModels] BIOS: $oem $modelName" -Type String
@@ -2653,6 +2728,9 @@ function Start-DATModelProcessing {
                                     if ($DistributionPointGroups -and $DistributionPointGroups.Count -gt 0) {
                                         $cmParams['DistributionPointGroups'] = $DistributionPointGroups
                                     }
+                                    if ($DistributionPoints -and $DistributionPoints.Count -gt 0) {
+                                        $cmParams['DistributionPoints'] = $DistributionPoints
+                                    }
                                     if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
                                     $cmResult = New-DATConfigMgrPkg @cmParams
 
@@ -2660,8 +2738,15 @@ function Start-DATModelProcessing {
                                         Write-DATLogEntry -Value "- $oem $modelName ConfigMgr BIOS package created" -Severity 1
 
                                         # Telemetry: BIOS report with staged package hash
+                                        # For ConfigMgr BIOS, $biosPackagePath is a directory (no WIM) --
+                                        # hash the first file inside it rather than the directory itself.
                                         try {
-                                            $biosHash = Get-DATPackageHash -FilePath $biosPackagePath
+                                            $hashTarget = $biosPackagePath
+                                            if (Test-Path $biosPackagePath -PathType Container) {
+                                                $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                                                if ($firstFile) { $hashTarget = $firstFile.FullName }
+                                            }
+                                            $biosHash = Get-DATPackageHash -FilePath $hashTarget
                                             Send-DATBiosReport -Manufacturer $oem -Model $modelName `
                                                 -Platform 'ConfigMgr' -Status 'Success' `
                                                 -TargetBiosVersion $biosVersion -PackageHash $biosHash
@@ -2682,7 +2767,12 @@ function Start-DATModelProcessing {
                             # Telemetry: BIOS report for Download Only mode
                             if ($RunningMode -notin @('Intune', 'Configuration Manager')) {
                                 try {
-                                    $biosHash = Get-DATPackageHash -FilePath $biosPackagePath
+                                    $hashTarget = $biosPackagePath
+                                    if (Test-Path $biosPackagePath -PathType Container) {
+                                        $firstFile = Get-ChildItem -Path $biosPackagePath -File -ErrorAction SilentlyContinue | Select-Object -First 1
+                                        if ($firstFile) { $hashTarget = $firstFile.FullName }
+                                    }
+                                    $biosHash = Get-DATPackageHash -FilePath $hashTarget
                                     Send-DATBiosReport -Manufacturer $oem -Model $modelName `
                                         -Platform $RunningMode -Status 'Success' `
                                         -TargetBiosVersion $biosEntry.Version -PackageHash $biosHash
@@ -2696,6 +2786,7 @@ function Start-DATModelProcessing {
                     }
                 }
                 } # end else (not skipBios)
+                } # end else (not Microsoft)
             }
 
             $completedCount++
@@ -3053,6 +3144,131 @@ function Unregister-DATScheduledBuild {
     return $false
 }
 
+function Get-DATAvailableUpdate {
+    <#
+    .SYNOPSIS
+        Checks GitHub for a newer version of the Driver Automation Tool.
+        Returns a hashtable with UpdateAvailable, CurrentVersion, LatestVersion.
+    #>
+    [CmdletBinding()]
+    param ()
+
+    $result = @{ UpdateAvailable = $false; CurrentVersion = $global:ScriptRelease; LatestVersion = $null; Error = $null }
+    try {
+        $proxyParams = Get-DATWebRequestProxy
+        $versionText = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolRev.txt" -UseBasicParsing -TimeoutSec 15 @proxyParams).Content.Trim()
+        [version]$latestVersion = $versionText
+        $result.LatestVersion = $latestVersion
+        if ($latestVersion -gt $global:ScriptRelease) {
+            $result.UpdateAvailable = $true
+        }
+    } catch {
+        $result.Error = $_.Exception.Message
+        Write-DATLogEntry -Value "[Update] Version check failed: $($_.Exception.Message)" -Severity 2
+    }
+    return $result
+}
+
+function Update-DATApplication {
+    <#
+    .SYNOPSIS
+        Downloads and applies the latest Driver Automation Tool release from GitHub.
+        Downloads the master branch ZIP, extracts it over the current install directory,
+        and relaunches the application.
+    #>
+    [CmdletBinding()]
+    param (
+        [string]$InstallDirectory = $global:ScriptDirectory
+    )
+
+    $downloadUrl = "https://github.com/maurice-daly/DriverAutomationTool/archive/refs/heads/master.zip"
+    $tempDir = Join-Path $env:TEMP "DATUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $zipPath = Join-Path $tempDir "DriverAutomationTool.zip"
+
+    Write-DATLogEntry -Value "[Update] Starting self-update from GitHub..." -Severity 1
+    Write-DATLogEntry -Value "[Update] Install directory: $InstallDirectory" -Severity 1
+
+    try {
+        # Create temp directory
+        New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+
+        # Download ZIP
+        Write-DATLogEntry -Value "[Update] Downloading release from $downloadUrl..." -Severity 1
+        $proxyParams = Get-DATWebRequestProxy
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120 @proxyParams -ErrorAction Stop
+
+        if (-not (Test-Path $zipPath)) {
+            throw "Download failed -- ZIP file not found at $zipPath"
+        }
+        $zipSize = (Get-Item $zipPath).Length
+        Write-DATLogEntry -Value "[Update] Downloaded $([math]::Round($zipSize / 1MB, 2)) MB" -Severity 1
+
+        # Extract ZIP
+        Write-DATLogEntry -Value "[Update] Extracting update package..." -Severity 1
+        $extractPath = Join-Path $tempDir "Extracted"
+        Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+        # The ZIP extracts to a subfolder like DriverAutomationTool-master
+        $extractedRoot = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
+        if (-not $extractedRoot) {
+            throw "Extracted archive does not contain an expected root folder"
+        }
+
+        # Back up current version
+        $backupDir = Join-Path $env:TEMP "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+        Write-DATLogEntry -Value "[Update] Backing up current installation to $backupDir..." -Severity 1
+        Copy-Item -Path $InstallDirectory -Destination $backupDir -Recurse -Force
+
+        # Copy new files over existing installation (preserve user data like Settings, Logs, Temp)
+        $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
+        Write-DATLogEntry -Value "[Update] Applying update files..." -Severity 1
+        $sourceItems = Get-ChildItem -Path $extractedRoot.FullName
+        foreach ($item in $sourceItems) {
+            if ($item.PSIsContainer -and $item.Name -in $preserveFolders) {
+                # Merge -- don't overwrite user data folders, but add new files
+                $destFolder = Join-Path $InstallDirectory $item.Name
+                if (-not (Test-Path $destFolder)) {
+                    Copy-Item -Path $item.FullName -Destination $destFolder -Recurse -Force
+                }
+                continue
+            }
+            $destPath = Join-Path $InstallDirectory $item.Name
+            Copy-Item -Path $item.FullName -Destination $destPath -Recurse -Force
+        }
+
+        Write-DATLogEntry -Value "[Update] Update applied successfully. Backup saved to $backupDir" -Severity 1
+
+        # Clean up temp download
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+
+        return @{
+            Success   = $true
+            BackupDir = $backupDir
+            Error     = $null
+        }
+    } catch {
+        Write-DATLogEntry -Value "[Update] Self-update failed: $($_.Exception.Message)" -Severity 3
+        # Attempt restore from backup if it exists
+        if ($backupDir -and (Test-Path $backupDir)) {
+            Write-DATLogEntry -Value "[Update] Restoring from backup..." -Severity 2
+            try {
+                Copy-Item -Path "$backupDir\*" -Destination $InstallDirectory -Recurse -Force
+                Write-DATLogEntry -Value "[Update] Backup restored successfully" -Severity 1
+            } catch {
+                Write-DATLogEntry -Value "[Update] Backup restore also failed: $($_.Exception.Message)" -Severity 3
+            }
+        }
+        # Clean up temp
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+
+        return @{
+            Success   = $false
+            BackupDir = $backupDir
+            Error     = $_.Exception.Message
+        }
+    }
+}
+
 function Test-DATHPCMSLReady {
     <#
     .SYNOPSIS
@@ -3072,7 +3288,25 @@ function Test-DATHPCMSLReady {
         if ($AutoInstall) {
             try {
                 Write-DATLogEntry -Value "[HP] HPCMSL not found -- installing from PSGallery..." -Severity 1
-                Install-Module -Name HPCMSL -Force -AcceptLicense -Scope CurrentUser -ErrorAction Stop
+
+                # Ensure PowerShellGet/PackageManagement are recent enough to install from PSGallery
+                $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1).Version
+                if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
+                    Write-DATLogEntry -Value "[HP] PowerShellGet v$psGetVer is outdated -- upgrading to enable PSGallery installs..." -Severity 2
+                    Install-Module -Name PowerShellGet -Force -AllowClobber -Scope AllUsers -ErrorAction Stop
+                    # Reload the updated module into the current session
+                    Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
+                    Write-DATLogEntry -Value "[HP] PowerShellGet upgraded successfully" -Severity 1
+                }
+
+                # Install to AllUsers so the module is available for scheduled/headless runs (e.g. SYSTEM context)
+                $installScope = 'AllUsers'
+                $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+                if (-not $isAdmin) {
+                    $installScope = 'CurrentUser'
+                    Write-DATLogEntry -Value "[HP] Running without admin rights -- falling back to Scope CurrentUser" -Severity 2
+                }
+                Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $installScope -ErrorAction Stop
                 $hpModule = Get-Module -ListAvailable -Name HPCMSL -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
             } catch {
                 $result.Error = "Failed to install HPCMSL: $($_.Exception.Message)"
@@ -3122,8 +3356,11 @@ function Test-DATHPCMSLReady {
             if ($AutoInstall) {
                 try {
                     Write-DATLogEntry -Value "[HP] Required module '$missingModule' missing -- reinstalling HPCMSL..." -Severity 2
-                    # Force reinstall to pull all dependencies
-                    Install-Module -Name HPCMSL -Force -AcceptLicense -Scope CurrentUser -AllowClobber -ErrorAction Stop
+                    # Force reinstall to pull all dependencies -- use AllUsers when possible for headless/scheduled task support
+                    $repairScope = 'AllUsers'
+                    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+                    if (-not $isAdmin) { $repairScope = 'CurrentUser' }
+                    Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $repairScope -AllowClobber -ErrorAction Stop
                     Import-Module -Name HPCMSL -Force -ErrorAction Stop
                     $result.Ready = $true
                     $result.Version = (Get-Module HPCMSL).Version
@@ -3740,7 +3977,8 @@ function Invoke-DATOEMDownloadModule {
             if ($null -ne $matchingModel -and -not [string]::IsNullOrEmpty($matchingModel.Url)) {
                 $downloadURL = $matchingModel.Url
                 $downloadFileName = $downloadURL | Split-Path -Leaf
-                Write-DATLogEntry -Value "[$OEM] Found Surface driver: $downloadFileName" -Severity 1
+                $catalogVersion = if ($matchingModel.ReleaseDate) { $matchingModel.ReleaseDate } else { '' }
+                Write-DATLogEntry -Value "[$OEM] Found Surface driver: $downloadFileName (ReleaseDate: $catalogVersion)" -Severity 1
             } else {
                 throw "No matching Microsoft driver package found for $Model ($WindowsVersion)"
             }
@@ -5682,34 +5920,61 @@ function New-DATIntuneInstallScript {
                     }
 
                     # Wait for the user to respond (up to 5 minutes)
+                    # NOTE: The scheduled task fires powershell.exe and then the task
+                    # itself transitions to Ready/completes almost immediately.  We must
+                    # track the actual toast PowerShell *process* (by PID) rather than
+                    # the task state -- otherwise the wait loop exits after the first
+                    # 10-second check and treats a still-visible toast as a timeout.
                     $waitTimeout = 300
                     $waited = 0
                     $taskExitedEarly = $false
+
+                    # Discover the toast process PID spawned by the scheduled task.
+                    # The task launches powershell.exe with the toast script path -- look
+                    # for processes whose command line contains the persistent script path.
+                    Start-Sleep -Seconds 3
+                    $waited += 3
+                    $toastProc = $null
+                    try {
+                        $toastProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                            Where-Object { $_.CommandLine -and $_.CommandLine -match 'Show-ToastNotification' } |
+                            Select-Object -First 1
+                        if ($toastProc) {
+                            Write-CMTraceLog "Toast process found: PID $($toastProc.ProcessId)"
+                        } else {
+                            Write-CMTraceLog "Toast process not found via WMI -- will track result file only" -Severity 2
+                        }
+                    } catch {
+                        Write-CMTraceLog "WMI process query failed: $($_.Exception.Message) -- will track result file only" -Severity 2
+                    }
+                    $toastPid = if ($toastProc) { $toastProc.ProcessId } else { $null }
+
                     while ($waited -lt $waitTimeout) {
                         Start-Sleep -Seconds 2
                         $waited += 2
                         if (Test-Path $toastResultFile) { break }
-                        # Log task state periodically for diagnostics
-                        if ($waited % 10 -eq 0) {
-                            $taskInfo = Get-ScheduledTask -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue
-                            if ($taskInfo) {
-                                $taskInfoObj = Get-ScheduledTaskInfo -TaskPath $taskFolder -TaskName $taskName -ErrorAction SilentlyContinue
-                                $lastResult = if ($taskInfoObj) { "0x{0:X}" -f $taskInfoObj.LastTaskResult } else { 'N/A' }
-                                Write-CMTraceLog "Toast wait ${waited}s -- task state: $($taskInfo.State), last result: $lastResult"
 
-                                # If the task has finished (Ready/Disabled) but no result file exists,
-                                # the toast process exited without user interaction (crash/killed/Focus Assist).
-                                # Break immediately rather than waiting the full 5-minute window.
-                                if ($taskInfo.State -in @('Ready','Disabled') -and -not (Test-Path $toastResultFile)) {
-                                    Write-CMTraceLog "Toast task completed early without result file (exit code: $lastResult) -- treating as timeout" -Severity 2
-                                    $taskExitedEarly = $true
-                                    break
-                                }
-                            } else {
-                                Write-CMTraceLog "Toast wait ${waited}s -- task no longer registered" -Severity 2
-                                $taskExitedEarly = $true
-                                break
-                            }
+                        # Check if the toast process is still running
+                        $processAlive = $false
+                        if ($null -ne $toastPid) {
+                            $processAlive = [bool](Get-Process -Id $toastPid -ErrorAction SilentlyContinue)
+                        } else {
+                            # No PID captured -- fall back to checking for any toast process
+                            $processAlive = [bool](Get-Process -Name 'powershell' -ErrorAction SilentlyContinue |
+                                Where-Object { try { (Get-CimInstance Win32_Process -Filter "ProcessId = $($_.Id)" -ErrorAction SilentlyContinue).CommandLine -match 'Show-ToastNotification' } catch { $false } } |
+                                Select-Object -First 1)
+                        }
+
+                        # Log state periodically for diagnostics
+                        if ($waited % 30 -eq 0) {
+                            Write-CMTraceLog "Toast wait ${waited}s -- process alive: $processAlive"
+                        }
+
+                        # Only break if the toast process has exited AND no result file appeared
+                        if (-not $processAlive -and -not (Test-Path $toastResultFile)) {
+                            Write-CMTraceLog "Toast process (PID: $toastPid) exited without result file at ${waited}s" -Severity 2
+                            $taskExitedEarly = $true
+                            break
                         }
                     }
 
@@ -7658,13 +7923,18 @@ function Invoke-DATBiosPackaging {
         [switch]$SkipWim
     )
 
-    # BIOS packages are OS-agnostic -- use "BIOS" as the subfolder instead of OS name
-    $biosStaging = Join-Path $PackageDestination "Packaged\$OEM\$Model\BIOS"
+    # BIOS packages are OS-agnostic -- use "BIOS" as the subfolder instead of OS name.
+    # Build the WIM in the Temporary Storage Path, then copy to the Package Store --
+    # same pattern as Invoke-DATDriverFilePackaging (avoids writing temp data into the
+    # package store and handles UNC destinations where DISM cannot create WIMs directly).
+    $localWorkDir = Join-Path $global:TempDirectory "BIOSBuild\$OEM\$Model"
+    $biosStaging = Join-Path $localWorkDir "Packaged\$OEM\$Model\BIOS"
     $extractDir = Join-Path $global:TempDirectory "BIOSExtract\$OEM\$Model"
     $wimFile = Join-Path $biosStaging "DriverPackage.wim"
+    $destBiosFolder = Join-Path $PackageDestination "$OEM\$Model\BIOS"
 
     # Clean previous
-    foreach ($dir in @($biosStaging, $extractDir)) {
+    foreach ($dir in @($localWorkDir, $biosStaging, $extractDir)) {
         if (Test-Path $dir) { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
         New-Item -Path $dir -ItemType Directory -Force | Out-Null
     }
@@ -7683,49 +7953,10 @@ function Invoke-DATBiosPackaging {
             }
         }
         'Dell' {
-            if ($SkipWim) {
-                # ConfigMgr / WinPE: extract the Dell BIOS exe so that Flash64W.exe and
-                # the BIOS payload files are available to the task sequence directly.
-                # Dell executables support /extract=<path> for silent content extraction.
-                Write-DATLogEntry -Value "[BIOS] Dell: Extracting BIOS exe for ConfigMgr (WinPE) package" -Severity 1
-                try {
-                    $extractProc = Start-Process -FilePath $BiosFilePath `
-                        -ArgumentList "/extract=`"$extractDir`"" `
-                        -WindowStyle Hidden -Wait -PassThru -ErrorAction Stop
-                    if ($extractProc.ExitCode -ne 0) {
-                        Write-DATLogEntry -Value "[BIOS] Dell: /extract exited with code $($extractProc.ExitCode) -- falling back to direct copy" -Severity 2
-                        Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
-                    } else {
-                        Write-DATLogEntry -Value "[BIOS] Dell: Extraction successful" -Severity 1
-                        # Also retain a copy of the original exe alongside extracted files
-                        Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
-                    }
-                } catch {
-                    Write-DATLogEntry -Value "[BIOS] Dell: Extraction failed ($($_.Exception.Message)) -- staging exe directly" -Severity 2
-                    Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
-                }
-
-                # Ensure Flash64W.exe is present -- download from Dell if not included in the BIOS package
-                $flash64Present = Get-ChildItem -Path $extractDir -Filter 'Flash64W.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($flash64Present) {
-                    Write-DATLogEntry -Value "[BIOS] Dell: Flash64W.exe found at $($flash64Present.FullName)" -Severity 1
-                    if ($flash64Present.DirectoryName -ne $extractDir) {
-                        Copy-Item -Path $flash64Present.FullName -Destination $extractDir -Force
-                    }
-                } else {
-                    Write-DATLogEntry -Value "[BIOS] Dell: Flash64W.exe not in package -- fetching standalone release" -Severity 2
-                    $gotFlash64 = Get-DATFlash64W -DestinationDir $extractDir
-                    if (-not $gotFlash64) {
-                        Write-DATLogEntry -Value "[BIOS] Dell: WARNING -- Flash64W.exe could not be obtained. WinPE task sequence may fail." -Severity 3
-                    }
-                }
-            } else {
-                # Intune / WIM: Dell BIOS exe is self-contained -- copy directly.
-                # The generated Install-BIOS.ps1 runs the exe directly under full Windows;
-                # Flash64W.exe is not needed in that context.
-                Write-DATLogEntry -Value "[BIOS] Dell: Staging self-contained BIOS updater" -Severity 1
-                Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
-            }
+            # Dell BIOS exe is self-contained -- copy directly for all deployment modes.
+            # The exe handles its own flash process; no extraction is needed.
+            Write-DATLogEntry -Value "[BIOS] Dell: Staging self-contained BIOS updater" -Severity 1
+            Copy-Item -Path $BiosFilePath -Destination $extractDir -Force
         }
         'HP' {
             # HP BIOS SoftPaq is a self-extracting archive -- use the same expansion flags
@@ -7821,12 +8052,14 @@ function Invoke-DATBiosPackaging {
     Write-DATLogEntry -Value "[BIOS] Extracted $($extractedFiles.Count) files" -Severity 1
 
     if ($SkipWim) {
-        # ConfigMgr: stage extracted files directly (no WIM compression)
-        Write-DATLogEntry -Value "[BIOS] Staging $($extractedFiles.Count) files to $biosStaging (no WIM)" -Severity 1
+        # ConfigMgr: return the temp extraction directory so New-DATConfigMgrPkg can
+        # copy its contents into the final versioned path ($PackagePath\$OEM\$Model\BIOS\$Version).
+        # Do NOT copy to the package store here -- that would place files at the unversioned
+        # $OEM\$Model\BIOS level, and ConfigMgr would then try to copy that into a child
+        # directory of itself ($OEM\$Model\BIOS\$Version), causing a self-overwrite error.
+        Write-DATLogEntry -Value "[BIOS] Staging $($extractedFiles.Count) files in temp: $extractDir (no WIM)" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Staging BIOS files for $OEM $Model..." -Type String
-        Copy-Item -Path "$extractDir\*" -Destination $biosStaging -Recurse -Force
-        Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-        return [string]$biosStaging
+        return [string]$extractDir
     }
 
     # Intune: Capture extracted content into WIM using the preferred engine
@@ -7873,10 +8106,19 @@ function Invoke-DATBiosPackaging {
         throw "BIOS WIM creation failed: $($_.Exception.Message)"
     }
 
-    # Clean up extraction temp
-    Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    # Copy WIM from temp to the Package Store destination
+    if (Test-Path $destBiosFolder) { Remove-Item $destBiosFolder -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -Path $destBiosFolder -ItemType Directory -Force | Out-Null
+    $destWimFile = Join-Path $destBiosFolder "DriverPackage.wim"
+    Write-DATLogEntry -Value "[BIOS] Copying WIM to package destination: $destWimFile" -Severity 1
+    Copy-Item -Path $wimFile -Destination $destWimFile -Force
+    Write-DATLogEntry -Value "[BIOS] WIM copied to package destination successfully" -Severity 1
 
-    return [string]$wimFile
+    # Clean up temp directories
+    Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -Path $localWorkDir -Recurse -Force -ErrorAction SilentlyContinue
+
+    return [string]$destWimFile
 }
 
 #endregion BIOS Catalog & Download

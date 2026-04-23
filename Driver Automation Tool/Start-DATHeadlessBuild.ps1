@@ -81,11 +81,26 @@ if (-not [string]::IsNullOrEmpty($config.CompressionLevel)) {
     }
 }
 
+# Guard: Microsoft models do not support standalone BIOS packages
+$headlessModels = $config.Models
+if ($config.PackageType -eq 'BIOS') {
+    $msModels = @($headlessModels | Where-Object { $_.OEM -eq 'Microsoft' })
+    if ($msModels.Count -gt 0 -and $msModels.Count -eq @($headlessModels).Count) {
+        Write-Error "[Headless] All selected models are Microsoft. BIOS packages are not supported for Microsoft Surface devices (firmware is delivered via driver updates). Use PackageType 'Drivers' or 'All'."
+        exit 1
+    }
+    if ($msModels.Count -gt 0) {
+        $msNames = ($msModels | ForEach-Object { $_.Model }) -join ', '
+        Write-Host "[Headless] Excluding $($msModels.Count) Microsoft model(s) from BIOS build (firmware delivered via driver updates): $msNames"
+        $headlessModels = @($headlessModels | Where-Object { $_.OEM -ne 'Microsoft' })
+    }
+}
+
 # Build splat for Start-DATModelProcessing (matches function signature)
 $processingParams = @{
     ScriptDirectory = $scriptRoot
     RegPath         = $global:RegPath
-    SelectedModels  = $config.Models
+    SelectedModels  = $headlessModels
     RunningMode     = $config.Platform
     PackageType     = $config.PackageType
     PackagePath     = $packagePath
@@ -158,6 +173,9 @@ switch ($config.Platform) {
             if ($config.ConfigMgr.SiteCode) { $processingParams['SiteCode'] = $config.ConfigMgr.SiteCode }
             if ($config.ConfigMgr.DistributionPointGroups -and $config.ConfigMgr.DistributionPointGroups.Count -gt 0) {
                 $processingParams['DistributionPointGroups'] = $config.ConfigMgr.DistributionPointGroups
+            }
+            if ($config.ConfigMgr.DistributionPoints -and $config.ConfigMgr.DistributionPoints.Count -gt 0) {
+                $processingParams['DistributionPoints'] = $config.ConfigMgr.DistributionPoints
             }
             if ($config.ConfigMgr.DistributionPriority) { $processingParams['DistributionPriority'] = $config.ConfigMgr.DistributionPriority }
         }

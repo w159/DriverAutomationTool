@@ -2625,11 +2625,14 @@ function Show-DATBuildProgressModal {
     $colorLine     = $theme['PipelineConnector']
 
     # For 'All' package type, expand each model into two rows: Drivers then BIOS
+    # Microsoft models skip the BIOS row (firmware is delivered via driver injection)
     $displayModels = if ($PackageType -eq 'All') {
         $expanded = [System.Collections.ArrayList]::new()
         foreach ($m in $Models) {
             [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'Drivers' })
-            [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'BIOS' })
+            if ($m.OEM -ne 'Microsoft') {
+                [void]$expanded.Add([PSCustomObject]@{ OEM = $m.OEM; Model = $m.Model; Phase = 'BIOS' })
+            }
         }
         $expanded
     } else {
@@ -4143,13 +4146,15 @@ $btn_RefreshModels.Add_Click({
                         }
                         foreach ($MSModelGroup in $MSModels) {
                             $products = ($MSModelGroup.Group | Select-Object -ExpandProperty Product -Unique) -join ','
+                            $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
+                            $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
                             $OEMSupportedModels += [PSCustomObject]@{
                                 OEM        = "Microsoft"
                                 Model      = $MSModelGroup.Name
                                 Baseboards = $products
                                 OS         = $WindowsVersion
                                 'OS Build' = $WindowsBuild
-                                Version    = ''
+                                Version    = $msVersion
                             }
                         }
                     } catch {
@@ -4240,6 +4245,14 @@ $btn_RefreshModels.Add_Click({
             $biosMatched = 0
             foreach ($model in $OEMSupportedModels) {
                 try {
+                    # Microsoft Surface BIOS is updated via driver injection -- use driver version as BIOS version
+                    if ($model.OEM -eq 'Microsoft') {
+                        if (-not [string]::IsNullOrEmpty($model.Version)) {
+                            $model | Add-Member -NotePropertyName 'BIOSVersion' -NotePropertyValue $model.Version -Force
+                            $biosMatched++
+                        }
+                        continue
+                    }
                     if ($model.OEM -eq 'Acer') {
                         # Acer uses XML catalog — use the existing function
                         $biosEntry = Find-DATBiosPackage -OEM $model.OEM -Baseboards $model.Baseboards -Catalog $biosCatalog
@@ -4537,6 +4550,36 @@ $btn_Build.Add_Click({
         return
     }
 
+    # Read package type early so we can guard against invalid combinations
+    $buildPackageType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
+
+    # Guard: Microsoft models do not support standalone BIOS packages
+    if ($buildPackageType -eq 'BIOS') {
+        $msModels = @($selectedModels | Where-Object { $_.OEM -eq 'Microsoft' })
+        if ($msModels.Count -eq $selectedModels.Count) {
+            # All selected models are Microsoft -- block the build entirely
+            Show-DATInfoDialog -Title 'BIOS Packages Not Supported' `
+                -Message "Microsoft Surface devices receive BIOS/firmware updates through the driver update process. Please select 'Drivers' or 'All' as the package type instead." `
+                -Type Info -ButtonLabel 'OK'
+            Write-DATActivityLog "Build blocked -- BIOS package type not supported for Microsoft models (firmware is included in driver updates)" -Level Warn
+            return
+        } elseif ($msModels.Count -gt 0) {
+            # Mix of Microsoft and other OEMs -- warn and continue with non-Microsoft only
+            $nonMsModels = @($selectedModels | Where-Object { $_.OEM -ne 'Microsoft' })
+            $msNames = ($msModels | ForEach-Object { $_.Model }) -join ', '
+            Show-DATInfoDialog -Title 'Microsoft Models Excluded' `
+                -Message "Microsoft Surface devices receive BIOS/firmware updates through the driver update process. The following models will be skipped for BIOS packaging:`n`n$msNames`n`nProceeding with $($nonMsModels.Count) remaining model$(if ($nonMsModels.Count -ne 1) { 's' })." `
+                -Type Warning -ButtonLabel 'Continue'
+            Write-DATActivityLog "Microsoft models excluded from BIOS build: $msNames" -Level Warn
+            # Replace selectedModels with non-Microsoft only
+            $selectedModels = $nonMsModels
+            if ($selectedModels.Count -eq 0) {
+                $txt_Status.Text = "No eligible models remaining."
+                return
+            }
+        }
+    }
+
     $btn_Build.IsEnabled = $false
     $btn_Abort.IsEnabled = $true
     $progress_Job.Visibility = 'Visible'
@@ -4618,7 +4661,6 @@ $btn_Build.Add_Click({
     $txt_BuildProgressLabel.Text = "Download:"
 
     # Show build progress modal with per-model pipeline stages
-    $buildPackageType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
     Show-DATBuildProgressModal -Models $global:SelectedModels -Platform $selectedPlatform -PackageType $buildPackageType
 
     # Launch processing in a background job
@@ -4628,7 +4670,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -4652,6 +4694,7 @@ $btn_Build.Add_Click({
         if (-not [string]::IsNullOrEmpty($SiteCode)) { $procParams['SiteCode'] = $SiteCode }
         if (-not [string]::IsNullOrEmpty($PackageType)) { $procParams['PackageType'] = $PackageType }
         if ($DPGroups -and $DPGroups.Count -gt 0) { $procParams['DistributionPointGroups'] = $DPGroups }
+        if ($DPs -and $DPs.Count -gt 0) { $procParams['DistributionPoints'] = $DPs }
         if (-not [string]::IsNullOrEmpty($DistPriority)) { $procParams['DistributionPriority'] = $DistPriority }
         if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
             $procParams['TeamsNotificationsEnabled'] = $true
@@ -4714,6 +4757,7 @@ $btn_Build.Add_Click({
     $cmSiteCode = $global:SiteCode
     $cmPackageType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
     $cmDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
+    $cmDPs = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
     $cmDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
 
     [void]$script:BuildPS.AddArgument((Resolve-Path $modulePath).Path)
@@ -4729,6 +4773,7 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($cmSiteCode)
     [void]$script:BuildPS.AddArgument($cmPackageType)
     [void]$script:BuildPS.AddArgument($cmDPGroups)
+    [void]$script:BuildPS.AddArgument($cmDPs)
     [void]$script:BuildPS.AddArgument($cmDistPriority)
     [void]$script:BuildPS.AddArgument($debugBuildPath)
     [void]$script:BuildPS.AddArgument($script:CustomBrandingImagePath)
@@ -7709,6 +7754,20 @@ $btn_Schedule.Add_Click({
         }
     }
 
+    # Guard: Microsoft models do not support standalone BIOS packages
+    $schedBuildPkgType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
+    if ($schedBuildPkgType -eq 'BIOS') {
+        $schedSelectedModels = @($script:ModelData | Where-Object { $_.Selected -eq $true })
+        $schedMsModels = @($schedSelectedModels | Where-Object { $_.OEM -eq 'Microsoft' })
+        if ($schedMsModels.Count -gt 0 -and $schedMsModels.Count -eq $schedSelectedModels.Count) {
+            Show-DATInfoDialog -Title 'BIOS Packages Not Supported' `
+                -Message "Microsoft Surface devices receive BIOS/firmware updates through the driver update process. Please select 'Drivers' or 'All' as the package type instead." `
+                -Type Info -ButtonLabel 'OK'
+            Write-DATActivityLog "Schedule blocked -- BIOS package type not supported for Microsoft models (firmware is included in driver updates)" -Level Warn
+            return
+        }
+    }
+
     $configPath = Join-Path $global:ScriptDirectory 'Settings\BuildConfig.json'
     $txt_ScheduleConfigPath.Text = $configPath
 
@@ -7795,6 +7854,27 @@ $btn_ScheduleSave.Add_Click({
     $schedOS = if ($null -ne $cmb_OS.SelectedItem) { $cmb_OS.SelectedItem.Content } else { $null }
     $schedArch = if ($null -ne $cmb_Architecture.SelectedItem) { $cmb_Architecture.SelectedItem.Content } else { 'x64' }
     $schedPkgType = if ($null -ne $cmb_PackageType -and $null -ne $cmb_PackageType.SelectedItem) { $cmb_PackageType.SelectedItem.Content } else { 'Drivers' }
+
+    # Guard: Microsoft models do not support standalone BIOS packages
+    if ($schedPkgType -eq 'BIOS') {
+        $schedMsModels = @($schedModels | Where-Object { $_.OEM -eq 'Microsoft' })
+        if ($schedMsModels.Count -gt 0 -and $schedMsModels.Count -eq @($schedModels).Count) {
+            Show-DATInfoDialog -Title 'BIOS Packages Not Supported' `
+                -Message "Microsoft Surface devices receive BIOS/firmware updates through the driver update process. Please select 'Drivers' or 'All' as the package type instead." `
+                -Type Info -ButtonLabel 'OK'
+            Write-DATActivityLog "Schedule save blocked -- BIOS package type not supported for Microsoft models" -Level Warn
+            return
+        }
+        if ($schedMsModels.Count -gt 0) {
+            $schedModels = @($schedModels | Where-Object { $_.OEM -ne 'Microsoft' })
+            $msNames = ($schedMsModels | ForEach-Object { $_.Model }) -join ', '
+            Show-DATInfoDialog -Title 'Microsoft Models Excluded' `
+                -Message "The following Microsoft models have been excluded from the scheduled BIOS build because Surface firmware updates are delivered via the driver update process:`n`n$msNames" `
+                -Type Warning -ButtonLabel 'OK'
+            Write-DATActivityLog "Schedule save -- excluded $($schedMsModels.Count) Microsoft model(s) from BIOS build: $msNames" -Level Warn
+        }
+    }
+
     $schedDisableToast = ($schedPlatform -eq 'Intune') -and ($chk_DisableToastPrompt.IsChecked -eq $true)
     $schedTimeoutAction = if ($cmb_BIOSTimeoutAction.SelectedIndex -eq 1) { 'InstallNow' } else { 'RemindMeLater' }
     $schedMaxDeferrals = if (($chk_EnableMaxDeferrals.IsChecked -eq $true) -and ($txt_MaxDeferrals.Text -match '^\d+$')) { [int]$txt_MaxDeferrals.Text } else { 0 }
@@ -7809,6 +7889,7 @@ $btn_ScheduleSave.Add_Click({
         SiteServer = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SiteServer)) { $regConfig.SiteServer } else { '' }
         SiteCode = if ($global:SiteCode) { $global:SiteCode } else { '' }
         DistributionPointGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
+        DistributionPoints = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
         DistributionPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
     }
 
@@ -8173,22 +8254,39 @@ $btn_InstallHpcmsl.Add_Click({
     $txt_HpcmslStatusIcon.Text = [string][char]0xE946
     $txt_HpcmslStatusIcon.Foreground = $Window.FindResource('InputPlaceholder')
     $txt_HpcmslStatus.Foreground = $Window.FindResource('InputPlaceholder')
-    Write-DATActivityLog "Installing HPCMSL module from PSGallery (Scope: CurrentUser)..." -Level Info
-    Write-DATLogEntry -Value "[HP CMSL] Installing HPCMSL module from PSGallery (Scope: CurrentUser)..." -Severity 1
+    # Determine install scope -- prefer AllUsers for headless/scheduled task compatibility
+    $installScope = 'AllUsers'
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) {
+        $installScope = 'CurrentUser'
+    }
+    Write-DATActivityLog "Installing HPCMSL module from PSGallery (Scope: $installScope)..." -Level Info
+    Write-DATLogEntry -Value "[HP CMSL] Installing HPCMSL module from PSGallery (Scope: $installScope)..." -Severity 1
 
     $script:hpcmslInstallJob = [PowerShell]::Create()
     $script:hpcmslInstallJob.AddScript({
+        param([string]$Scope)
+
+        # Ensure PowerShellGet is new enough to install from PSGallery reliably
+        $psGetVer = (Get-Module -ListAvailable -Name PowerShellGet -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1).Version
+        if ($null -eq $psGetVer -or $psGetVer -lt [version]'2.2.5') {
+            Write-Verbose "PowerShellGet v$psGetVer is outdated -- upgrading..."
+            Install-Module -Name PowerShellGet -Force -AllowClobber -Scope $Scope -ErrorAction Stop
+            Import-Module -Name PowerShellGet -Force -ErrorAction SilentlyContinue
+            Write-Verbose "PowerShellGet upgraded successfully"
+        }
+
         Write-Verbose "Checking PSGallery for HPCMSL package..."
         $pkg = Find-Module -Name HPCMSL -Repository PSGallery -ErrorAction Stop
-        Write-Verbose "Found HPCMSL v$($pkg.Version) — downloading and installing..."
-        Install-Module -Name HPCMSL -Force -AcceptLicense -Scope CurrentUser -ErrorAction Stop
+        Write-Verbose "Found HPCMSL v$($pkg.Version) -- downloading and installing..."
+        Install-Module -Name HPCMSL -Force -AcceptLicense -Scope $Scope -ErrorAction Stop
         Write-Verbose "Module files installed. Validating import..."
         Import-Module -Name HPCMSL -Force -ErrorAction Stop
         $mod = Get-Module -Name HPCMSL
         Write-Verbose "HPCMSL v$($mod.Version) imported successfully. Cleaning up..."
         Remove-Module -Name HPCMSL -Force -ErrorAction SilentlyContinue
         return $mod.Version.ToString()
-    })
+    }).AddArgument($installScope)
     $script:hpcmslInstallJob.Streams.Verbose.Add_DataAdded({
         # Cannot write to UI directly from stream event — enqueue for drain
     })
@@ -8531,7 +8629,7 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddScript({
         param($ModulePath, $Make, $Model, $BaseBoard, $Platform, $TempStorage, $PackageStorage, $RegPath,
               $OSLabel, $Architecture, $Version, $ScriptDir, $IntuneToken, $SiteServer, $SiteCode, $DisableToast, $TotalSteps,
-              $Method, $DriverFolderPath, $DPGroups, $DistPriority, $DebugBuildPath, $CustomBrandingPath)
+              $Method, $DriverFolderPath, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath)
 
         Import-Module $ModulePath -Force
         $global:ScriptDirectory = $ScriptDir
@@ -9036,7 +9134,7 @@ $btn_CustomBuild.Add_Click({
                         -OS $OSLabel -Architecture $Architecture -Baseboards $BaseBoard `
                         -PackagePath $PackageStorage -SiteServer $SiteServer `
                         -SiteCode $SiteCode -Version $Version -PackageType 'Drivers' `
-                        -DistributionPointGroups $DPGroups -Priority $DistPriority
+                        -DistributionPointGroups $DPGroups -DistributionPoints $DPs -Priority $DistPriority
                     if ($cmResult) {
                         Write-DATLogEntry -Value "- [ConfigMgr] - Package created successfully" -Severity 1
                         Set-Phase -Phase "Complete" -Percent 100 `
@@ -9110,10 +9208,12 @@ $btn_CustomBuild.Add_Click({
     [void]$script:CustomBuildPS.AddArgument($totalSteps)
     [void]$script:CustomBuildPS.AddArgument($method)
     [void]$script:CustomBuildPS.AddArgument($driverFolderPath)
-    # ConfigMgr DP group and priority settings
+    # ConfigMgr DP group, individual DP, and priority settings
     $customDPGroups = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPGroups)) { @($regConfig.SelectedDPGroups -split '\|') } else { @() }
+    $customDPs = if ($regConfig -and -not [string]::IsNullOrEmpty($regConfig.SelectedDPs)) { @($regConfig.SelectedDPs -split '\|') } else { @() }
     $customDistPriority = if ($null -ne $cmb_DistPriority -and $null -ne $cmb_DistPriority.SelectedItem) { $cmb_DistPriority.SelectedItem.Content } else { 'Normal' }
     [void]$script:CustomBuildPS.AddArgument($customDPGroups)
+    [void]$script:CustomBuildPS.AddArgument($customDPs)
     [void]$script:CustomBuildPS.AddArgument($customDistPriority)
     [void]$script:CustomBuildPS.AddArgument($debugBuildPath)
     [void]$script:CustomBuildPS.AddArgument($script:CustomBrandingImagePath)
@@ -11685,16 +11785,96 @@ $Window.FindName('btn_MBMGitHub').Add_Click({
 
 $btn_CheckUpdate.Add_Click({
     try {
-        $proxyParams = Get-DATWebRequestProxy
-        [version]$latestVersion = (Invoke-WebRequest -Uri "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data//DriverAutomationToolRev.txt" -UseBasicParsing @proxyParams).Content
-        if ($latestVersion -gt $global:ScriptRelease) {
-            $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update available: $latestVersion"
+        $btn_CheckUpdate.IsEnabled = $false
+        $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Checking..."
+        $updateInfo = Get-DATAvailableUpdate
+        if ($updateInfo.Error) {
+            $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Unable to check for updates."
+        } elseif ($updateInfo.UpdateAvailable) {
+            $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update available: $($updateInfo.LatestVersion)"
+            $btn_ApplyUpdate = $Window.FindName('btn_ApplyUpdate')
+            $btn_ApplyUpdate.Visibility = 'Visible'
         } else {
             $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - You are up to date."
         }
     } catch {
         $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Unable to check for updates."
+    } finally {
+        $btn_CheckUpdate.IsEnabled = $true
     }
+})
+
+# Apply update button handler
+$script:btn_ApplyUpdate = $Window.FindName('btn_ApplyUpdate')
+$script:txt_UpdateProgress = $Window.FindName('txt_UpdateProgress')
+
+$script:btn_ApplyUpdate.Add_Click({
+    $script:btn_ApplyUpdate.IsEnabled = $false
+    $btn_CheckUpdate.IsEnabled = $false
+    $script:txt_UpdateProgress.Visibility = 'Visible'
+    $script:txt_UpdateProgress.Text = "Downloading update from GitHub..."
+    Write-DATActivityLog "Starting self-update from GitHub..." -Level Info
+
+    $script:updateJob = [PowerShell]::Create()
+    $script:updateJob.AddScript({
+        param([string]$InstallDir)
+        # Re-import the module in this runspace so Update-DATApplication is available
+        $modulePath = Join-Path $InstallDir 'Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1'
+        Import-Module $modulePath -Force -ErrorAction Stop
+        Update-DATApplication -InstallDirectory $InstallDir
+    }).AddArgument($global:ScriptDirectory)
+    $script:updateAsyncResult = $script:updateJob.BeginInvoke()
+
+    $script:updateTimer = [System.Windows.Threading.DispatcherTimer]::new()
+    $script:updateTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $script:updateTimer.Add_Tick({
+        if ($script:updateAsyncResult.IsCompleted) {
+            $script:updateTimer.Stop()
+            try {
+                $updateResult = $script:updateJob.EndInvoke($script:updateAsyncResult)
+                if ($script:updateJob.Streams.Error.Count -gt 0) {
+                    throw $script:updateJob.Streams.Error[0].Exception
+                }
+                if ($updateResult.Success) {
+                    Write-DATActivityLog "Update applied successfully. Backup at: $($updateResult.BackupDir)" -Level Success
+                    $script:txt_UpdateProgress.Text = "Update complete! Please restart to use the new version."
+                    $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusSuccess')
+                    $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update installed. Restart required."
+
+                    # Prompt the user to restart
+                    $restartResult = [System.Windows.MessageBox]::Show(
+                        "The Driver Automation Tool has been updated successfully.`n`nWould you like to restart now to apply the changes?",
+                        "Update Complete",
+                        [System.Windows.MessageBoxButton]::YesNo,
+                        [System.Windows.MessageBoxImage]::Information
+                    )
+                    if ($restartResult -eq [System.Windows.MessageBoxResult]::Yes) {
+                        $launcherPath = Join-Path $global:ScriptDirectory 'Start-DriverAutomationTool.ps1'
+                        if (Test-Path $launcherPath) {
+                            Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`""
+                        }
+                        $Window.Close()
+                    }
+                } else {
+                    Write-DATActivityLog "Update failed: $($updateResult.Error)" -Level Error
+                    $script:txt_UpdateProgress.Text = "Update failed: $($updateResult.Error)"
+                    $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusError')
+                }
+            } catch {
+                $errMsg = $_.Exception.Message
+                Write-DATActivityLog "Update failed: $errMsg" -Level Error
+                $script:txt_UpdateProgress.Text = "Update failed: $errMsg"
+                $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusError')
+            } finally {
+                $script:updateJob.Dispose()
+                $script:updateJob = $null
+                $script:updateAsyncResult = $null
+                $script:btn_ApplyUpdate.IsEnabled = $true
+                $btn_CheckUpdate.IsEnabled = $true
+            }
+        }
+    })
+    $script:updateTimer.Start()
 })
 
 #endregion Update Check
@@ -12532,9 +12712,8 @@ try {
 $script:SuppressModelRefresh = $false
 
 # Auto-refresh models if previous selections were restored
-if ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem) {
-    Invoke-DATRefreshModelsClick
-}
+# Deferred to ContentRendered so the Loading Sources modal appears over the main window
+$script:AutoRefreshPending = ((Get-DATSelectedOEMs).Count -gt 0 -and $null -ne $cmb_OS.SelectedItem)
 
 # Set sidebar logo image
 $logoPath = Join-Path $UIPath "Assets\NewDatLogo.png"
@@ -12554,7 +12733,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.11"
+$script:versionString = "v10.0.14"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion
@@ -12892,11 +13071,16 @@ $Window.Add_Closing({
 # Show the window
 # If EULA not yet accepted, navigate to About page on first render so the user sees it immediately
 $eulaAtStartup = (Get-ItemProperty -Path $global:RegPath -Name "EULAAccepted" -ErrorAction SilentlyContinue).EULAAccepted
-if ($eulaAtStartup -ne "True") {
-    $Window.Add_ContentRendered({
+$Window.Add_ContentRendered({
+    if ($eulaAtStartup -ne "True") {
         Set-DATActiveView -ViewName 'view_About' -NavButtonName 'nav_About'
         $txt_EulaWarning.Visibility = 'Visible'
-        Write-DATActivityLog "EULA not accepted — navigated to About page on startup" -Level Warn
-    })
-}
+        Write-DATActivityLog "EULA not accepted -- navigated to About page on startup" -Level Warn
+    }
+    # Trigger auto-refresh now that the main window is visible
+    if ($script:AutoRefreshPending) {
+        $script:AutoRefreshPending = $false
+        Invoke-DATRefreshModelsClick
+    }
+})
 $Window.ShowDialog() | Out-Null

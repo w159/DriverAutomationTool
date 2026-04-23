@@ -421,6 +421,10 @@ try {
     Write-CMTraceLog "WIM extraction complete. Files extracted: $extractedFiles"
 
     # -- Suspend BitLocker -------------------------------------------------------
+    $script:BitLockerSuspended = $false
+    $script:FlashSucceeded = $false
+    $flashExitCode = $null
+
     if ($WhatIf) {
         Write-CMTraceLog "WHATIF: Would suspend BitLocker for 1 reboot cycle" -Severity 2
     } else {
@@ -431,9 +435,6 @@ try {
     $biosPassword = Get-BIOSPasswordFromRegistry
 
     # -- Manufacturer-Specific BIOS Flash ----------------------------------------
-    $script:BitLockerSuspended = $false
-    $script:FlashSucceeded = $false
-    $flashExitCode = $null
 
     switch -Wildcard ($Manufacturer) {
 

@@ -1,6 +1,6 @@
 @{
     RootModule        = 'DriverAutomationToolCore.psm1'
-    ModuleVersion     = '10.0.10.0'
+    ModuleVersion     = '10.0.14.0'
     GUID              = 'a3e0e746-8e3a-4c5b-b8d0-3b2e4f6a9c1d'
     Author            = 'Maurice Daly'
     CompanyName       = 'MSEndpointMgr'
@@ -87,7 +87,9 @@
         'Import-DATBuildConfig',
         'Export-DATBuildConfig',
         'Register-DATScheduledBuild',
-        'Unregister-DATScheduledBuild'
+        'Unregister-DATScheduledBuild',
+        'Get-DATAvailableUpdate',
+        'Update-DATApplication'
     )
     VariablesToExport = '*'
     CmdletsToExport   = @()
