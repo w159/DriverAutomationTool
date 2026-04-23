@@ -560,6 +560,158 @@ function Show-DATInfoDialog {
     $dlg.ShowDialog() | Out-Null
 }
 
+function Show-DATConfirmDialog {
+    param (
+        [string]$Title = "Confirm",
+        [string]$Message,
+        [ValidateSet('Success', 'Error', 'Warning', 'Info')]
+        [string]$Type = 'Info',
+        [string]$ConfirmLabel = 'Yes',
+        [string]$CancelLabel = 'No'
+    )
+
+    $theme = Get-DATTheme -ThemeName $script:CurrentTheme
+    $bgColor = [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBackground'])
+
+    switch ($Type) {
+        'Success' { $iconChar = [string][char]0xE73E; $iconColor = $theme['StatusSuccess'] }
+        'Error'   { $iconChar = [string][char]0xEA39; $iconColor = $theme['StatusError'] }
+        'Warning' { $iconChar = [string][char]0xE7BA; $iconColor = $theme['StatusWarning'] }
+        default   { $iconChar = [string][char]0xE946; $iconColor = $theme['StatusInfo'] }
+    }
+
+    $dlg = [System.Windows.Window]::new()
+    $dlg.WindowStyle = 'None'
+    $dlg.AllowsTransparency = $true
+    $dlg.Background = [System.Windows.Media.Brushes]::Transparent
+    $dlg.WindowStartupLocation = 'CenterOwner'
+    $dlg.Owner = $Window
+    $dlg.Width = 440
+    $dlg.SizeToContent = 'Height'
+    $dlg.Topmost = $true
+    $dlg.ResizeMode = 'NoResize'
+    $dlg.ShowInTaskbar = $false
+
+    $border = [System.Windows.Controls.Border]::new()
+    $border.Background = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.Color]::FromArgb(245, $bgColor.R, $bgColor.G, $bgColor.B))
+    $border.CornerRadius = [System.Windows.CornerRadius]::new(16)
+    $border.Padding = [System.Windows.Thickness]::new(28, 24, 28, 24)
+    $border.BorderBrush = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['CardBorder']))
+    $border.BorderThickness = [System.Windows.Thickness]::new(1)
+    $shadow = [System.Windows.Media.Effects.DropShadowEffect]::new()
+    $shadow.BlurRadius = 30; $shadow.ShadowDepth = 0; $shadow.Opacity = 0.5
+    $shadow.Color = [System.Windows.Media.Colors]::Black
+    $border.Effect = $shadow
+
+    $panel = [System.Windows.Controls.StackPanel]::new()
+
+    # Icon
+    $iconText = [System.Windows.Controls.TextBlock]::new()
+    $iconText.Text = $iconChar
+    $iconText.FontFamily = [System.Windows.Media.FontFamily]::new('Segoe MDL2 Assets')
+    $iconText.FontSize = 28
+    $iconText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($iconColor))
+    $iconText.HorizontalAlignment = 'Center'
+    $iconText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($iconText) | Out-Null
+
+    # Title
+    $titleText = [System.Windows.Controls.TextBlock]::new()
+    $titleText.Text = $Title
+    $titleText.FontSize = 16
+    $titleText.FontWeight = [System.Windows.FontWeights]::Bold
+    $titleText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['WindowForeground']))
+    $titleText.HorizontalAlignment = 'Center'
+    $titleText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 12)
+    $panel.Children.Add($titleText) | Out-Null
+
+    # Message
+    $msgText = [System.Windows.Controls.TextBlock]::new()
+    $msgText.Text = $Message
+    $msgText.FontSize = 13
+    $msgText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+    $msgText.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['InputPlaceholder']))
+    $msgText.HorizontalAlignment = 'Center'
+    $msgText.TextAlignment = [System.Windows.TextAlignment]::Center
+    $msgText.Margin = [System.Windows.Thickness]::new(0, 0, 0, 24)
+    $panel.Children.Add($msgText) | Out-Null
+
+    # Button row
+    $btnPanel = [System.Windows.Controls.Grid]::new()
+    $col1 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col1.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $col2 = [System.Windows.Controls.ColumnDefinition]::new()
+    $col2.Width = [System.Windows.GridLength]::new(1, [System.Windows.GridUnitType]::Star)
+    $btnPanel.ColumnDefinitions.Add($col1)
+    $btnPanel.ColumnDefinitions.Add($col2)
+
+    # Confirm button (primary)
+    $btnConfirm = [System.Windows.Controls.Button]::new()
+    $btnConfirm.Height = 36
+    $btnConfirm.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnConfirm.Margin = [System.Windows.Thickness]::new(0, 0, 6, 0)
+    $confirmTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonPrimary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonPrimaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnConfirm.Template = $confirmTemplate
+    $btnConfirm.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonPrimaryForeground']))
+    $btnConfirm.FontSize = 13
+    $btnConfirm.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnConfirm.Content = $ConfirmLabel
+    $btnConfirm.Add_Click({ $dlg.Tag = $true; $dlg.Close() })
+    [System.Windows.Controls.Grid]::SetColumn($btnConfirm, 0)
+    $btnPanel.Children.Add($btnConfirm) | Out-Null
+
+    # Cancel button (secondary)
+    $btnCancel = [System.Windows.Controls.Button]::new()
+    $btnCancel.Height = 36
+    $btnCancel.Cursor = [System.Windows.Input.Cursors]::Hand
+    $btnCancel.Margin = [System.Windows.Thickness]::new(6, 0, 0, 0)
+    $cancelTemplate = [System.Windows.Markup.XamlReader]::Parse(@"
+<ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+    <Border x:Name="bd" Background="$($theme['ButtonSecondary'])" CornerRadius="8" Padding="16,8">
+        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+    </Border>
+    <ControlTemplate.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+            <Setter TargetName="bd" Property="Background" Value="$($theme['ButtonSecondaryHover'])"/>
+        </Trigger>
+    </ControlTemplate.Triggers>
+</ControlTemplate>
+"@)
+    $btnCancel.Template = $cancelTemplate
+    $btnCancel.Foreground = [System.Windows.Media.SolidColorBrush]::new(
+        [System.Windows.Media.ColorConverter]::ConvertFromString($theme['ButtonSecondaryForeground']))
+    $btnCancel.FontSize = 13
+    $btnCancel.FontWeight = [System.Windows.FontWeights]::SemiBold
+    $btnCancel.Content = $CancelLabel
+    $btnCancel.Add_Click({ $dlg.Tag = $false; $dlg.Close() })
+    [System.Windows.Controls.Grid]::SetColumn($btnCancel, 1)
+    $btnPanel.Children.Add($btnCancel) | Out-Null
+
+    $panel.Children.Add($btnPanel) | Out-Null
+
+    $border.Child = $panel
+    $dlg.Content = $border
+    $dlg.ShowDialog() | Out-Null
+    return ($dlg.Tag -eq $true)
+}
+
 function Show-DATLoadingSourcesModal {
     <#
     .SYNOPSIS
@@ -7537,9 +7689,9 @@ $btn_BrowseTemp.Add_Click({
     $dialog.Description = "Select Temporary Storage Path (local paths only)"
     if ($dialog.ShowDialog() -eq 'OK') {
         if ($dialog.SelectedPath -match '^\\\\') {
-            [System.Windows.MessageBox]::Show(
-                "Temporary Storage Path must be a local path (not a UNC/network path).`nPlease select a local folder.",
-                "Invalid Path", 'OK', 'Warning') | Out-Null
+            Show-DATInfoDialog -Title 'Invalid Path' `
+                -Message "Temporary Storage Path must be a local path (not a UNC/network path).`nPlease select a local folder." `
+                -Type Warning
             return
         }
         $txt_TempStorage.Text = $dialog.SelectedPath
@@ -7562,9 +7714,9 @@ $txt_TempStorage.Add_LostFocus({
     $path = $txt_TempStorage.Text
     if (-not [string]::IsNullOrEmpty($path)) {
         if ($path -match '^\\\\') {
-            [System.Windows.MessageBox]::Show(
-                "Temporary Storage Path must be a local path (not a UNC/network path).`nPlease enter a local folder.",
-                "Invalid Path", 'OK', 'Warning') | Out-Null
+            Show-DATInfoDialog -Title 'Invalid Path' `
+                -Message "Temporary Storage Path must be a local path (not a UNC/network path).`nPlease enter a local folder." `
+                -Type Warning
             $txt_TempStorage.Text = ''
             return
         }
@@ -7833,7 +7985,9 @@ $btn_ScheduleSave.Add_Click({
     # Export current UI selections into BuildConfig.json
     $schedModels = $script:ModelData | Where-Object { $_.Selected -eq $true }
     if ($schedModels.Count -eq 0) {
-        [System.Windows.MessageBox]::Show("No models selected. Please select at least one model before scheduling.", "Schedule Error", 'OK', 'Warning')
+        Show-DATInfoDialog -Title 'No Models Selected' `
+            -Message 'Please select at least one model before scheduling.' `
+            -Type Warning
         return
     }
     $schedPlatform = if ($null -ne $cmb_Platform.SelectedItem) { $cmb_Platform.SelectedItem.Content } else { 'Download Only' }
@@ -7907,7 +8061,9 @@ $btn_ScheduleSave.Add_Click({
             -TeamsWebhookUrl $schedTeamsUrl -TeamsNotificationsEnabled $schedTeamsEnabled -ConfigMgr $schedCM `
             -Intune $schedIntune
     } catch {
-        [System.Windows.MessageBox]::Show("Failed to export build config:`n$($_.Exception.Message)", "Schedule Error", 'OK', 'Error')
+        Show-DATInfoDialog -Title 'Schedule Error' `
+            -Message "Failed to export build config:`n`n$($_.Exception.Message)" `
+            -Type Error
         return
     }
 
@@ -7932,7 +8088,9 @@ $btn_ScheduleSave.Add_Click({
             -Message "Your $($frequency.ToLower()) build has been scheduled$dayInfo at $time.`n`nThe task will run under SYSTEM in the '\Driver Automation Tool\' task folder.$onceNote" `
             -Type Success
     } catch {
-        [System.Windows.MessageBox]::Show("Failed to register scheduled task:`n$($_.Exception.Message)", "Schedule Error", 'OK', 'Error')
+        Show-DATInfoDialog -Title 'Schedule Error' `
+            -Message "Failed to register scheduled task:`n`n$($_.Exception.Message)" `
+            -Type Error
     }
 })
 
@@ -7943,7 +8101,9 @@ $btn_ScheduleRemove.Add_Click({
         $overlay_Schedule.Visibility = 'Collapsed'
         $txt_Status.Text = "Scheduled build removed."
     } catch {
-        [System.Windows.MessageBox]::Show("Failed to remove scheduled task:`n$($_.Exception.Message)", "Schedule Error", 'OK', 'Error')
+        Show-DATInfoDialog -Title 'Schedule Error' `
+            -Message "Failed to remove scheduled task:`n`n$($_.Exception.Message)" `
+            -Type Error
     }
 })
 
@@ -11812,24 +11972,186 @@ $script:btn_ApplyUpdate.Add_Click({
     $script:btn_ApplyUpdate.IsEnabled = $false
     $btn_CheckUpdate.IsEnabled = $false
     $script:txt_UpdateProgress.Visibility = 'Visible'
-    $script:txt_UpdateProgress.Text = "Downloading update from GitHub..."
+    $script:txt_UpdateProgress.Text = "Preparing update..."
+    $script:txt_UpdateProgress.Foreground = $Window.FindResource('InputPlaceholder')
     Write-DATActivityLog "Starting self-update from GitHub..." -Level Info
 
+    # Create a runspace that shares the LogQueue for real-time progress
+    $script:updateRunspace = [runspacefactory]::CreateRunspace()
+    $script:updateRunspace.Open()
+    $script:updateRunspace.SessionStateProxy.SetVariable('LogQueue', $script:LogQueue)
+
     $script:updateJob = [PowerShell]::Create()
-    $script:updateJob.AddScript({
-        param([string]$InstallDir)
-        # Re-import the module in this runspace so Update-DATApplication is available
-        $modulePath = Join-Path $InstallDir 'Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1'
-        Import-Module $modulePath -Force -ErrorAction Stop
-        Update-DATApplication -InstallDirectory $InstallDir
-    }).AddArgument($global:ScriptDirectory)
+    $script:updateJob.Runspace = $script:updateRunspace
+    [void]$script:updateJob.AddScript({
+        param([string]$InstallDir, [string]$CoreModulePath)
+
+        function Write-UpdateLog {
+            param([string]$Message, [string]$Level = 'Info')
+            # Post to UI queue with [UPDATE] prefix so the timer can extract it
+            $LogQueue.Enqueue("[UPDATE] $Message")
+            $severity = switch ($Level) { 'Error' { '3' } 'Warn' { '2' } default { '1' } }
+            try { Write-DATLogEntry -Value "[Update] $Message" -Severity $severity } catch { }
+        }
+
+        try {
+            Write-UpdateLog "Loading core module..."
+            Import-Module $CoreModulePath -Force -ErrorAction Stop
+
+            Write-UpdateLog "Install directory: $InstallDir"
+
+            $downloadUrl = "https://github.com/maurice-daly/DriverAutomationTool/archive/refs/heads/master.zip"
+            $tempDir = Join-Path $env:TEMP "DATUpdate_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            $zipPath = Join-Path $tempDir "DriverAutomationTool.zip"
+
+            # Create temp directory
+            New-Item -Path $tempDir -ItemType Directory -Force | Out-Null
+            Write-UpdateLog "Temp directory: $tempDir"
+
+            # Download ZIP
+            Write-UpdateLog "Downloading from: $downloadUrl"
+            $proxyParams = Get-DATWebRequestProxy
+            Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing -TimeoutSec 120 @proxyParams -ErrorAction Stop
+
+            if (-not (Test-Path $zipPath)) {
+                throw "Download failed -- ZIP file not found at $zipPath"
+            }
+            $zipSize = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+            Write-UpdateLog "Downloaded $zipSize MB to: $zipPath"
+
+            # Extract ZIP
+            Write-UpdateLog "Extracting update package..."
+            $extractPath = Join-Path $tempDir "Extracted"
+            Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+
+            $extractedRoot = Get-ChildItem -Path $extractPath -Directory | Select-Object -First 1
+            if (-not $extractedRoot) {
+                throw "Extracted archive does not contain an expected root folder"
+            }
+            Write-UpdateLog "Extracted root: $($extractedRoot.FullName)"
+
+            # The GitHub archive nests the app inside a subfolder (e.g. 'Driver Automation Tool').
+            # Detect the correct source by looking for the launcher script.
+            $sourceDir = $extractedRoot.FullName
+            $launcherName = 'Start-DriverAutomationTool.ps1'
+            if (-not (Test-Path (Join-Path $sourceDir $launcherName))) {
+                $subFolder = Get-ChildItem -Path $sourceDir -Directory | Where-Object {
+                    Test-Path (Join-Path $_.FullName $launcherName)
+                } | Select-Object -First 1
+                if ($subFolder) {
+                    $sourceDir = $subFolder.FullName
+                    Write-UpdateLog "App files located in subfolder: $($subFolder.Name)"
+                } else {
+                    throw "Cannot locate $launcherName in extracted archive"
+                }
+            }
+            Write-UpdateLog "Source directory: $sourceDir"
+
+            $sourceContents = (Get-ChildItem -Path $sourceDir | Select-Object -ExpandProperty Name) -join ', '
+            Write-UpdateLog "Source contents: $sourceContents"
+
+            # Back up current version
+            $backupDir = Join-Path $env:TEMP "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            Write-UpdateLog "Backing up current installation to: $backupDir"
+            Copy-Item -Path $InstallDir -Destination $backupDir -Recurse -Force
+            Write-UpdateLog "Backup complete"
+
+            # Copy new files -- preserve user data folders
+            $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
+            Write-UpdateLog "Replacing application files (preserving: $($preserveFolders -join ', '))..."
+            $sourceItems = Get-ChildItem -Path $sourceDir
+            $copiedCount = 0
+            $skippedCount = 0
+            foreach ($item in $sourceItems) {
+                if ($item.PSIsContainer -and $item.Name -in $preserveFolders) {
+                    $destFolder = Join-Path $InstallDir $item.Name
+                    if (-not (Test-Path $destFolder)) {
+                        Copy-Item -Path $item.FullName -Destination $destFolder -Recurse -Force
+                        Write-UpdateLog "Created new folder: $($item.Name)"
+                        $copiedCount++
+                    } else {
+                        Write-UpdateLog "Preserved existing: $($item.Name)"
+                        $skippedCount++
+                    }
+                    continue
+                }
+                $destPath = Join-Path $InstallDir $item.Name
+                Copy-Item -Path $item.FullName -Destination $destPath -Recurse -Force
+                $copiedCount++
+                if ($item.PSIsContainer) {
+                    $childCount = (Get-ChildItem -Path $item.FullName -Recurse -File).Count
+                    Write-UpdateLog "Replaced folder: $($item.Name) ($childCount files)"
+                } else {
+                    Write-UpdateLog "Replaced file: $($item.Name)"
+                }
+            }
+
+            # Clean up temp
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            Write-UpdateLog "Update applied -- $copiedCount items replaced, $skippedCount preserved"
+
+            return @{
+                Success   = $true
+                BackupDir = $backupDir
+                Error     = $null
+            }
+        } catch {
+            Write-UpdateLog "Self-update failed: $($_.Exception.Message)" -Level Error
+            # Attempt restore from backup
+            if ($backupDir -and (Test-Path $backupDir)) {
+                Write-UpdateLog "Restoring from backup..." -Level Warn
+                try {
+                    Copy-Item -Path "$backupDir\*" -Destination $InstallDir -Recurse -Force
+                    Write-UpdateLog "Backup restored successfully"
+                } catch {
+                    Write-UpdateLog "Backup restore failed: $($_.Exception.Message)" -Level Error
+                }
+            }
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+
+            return @{
+                Success   = $false
+                BackupDir = $backupDir
+                Error     = $_.Exception.Message
+            }
+        }
+    })
+    $modulePath = Join-Path $global:ScriptDirectory 'Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1'
+    [void]$script:updateJob.AddArgument($global:ScriptDirectory)
+    [void]$script:updateJob.AddArgument($modulePath)
     $script:updateAsyncResult = $script:updateJob.BeginInvoke()
 
     $script:updateTimer = [System.Windows.Threading.DispatcherTimer]::new()
     $script:updateTimer.Interval = [TimeSpan]::FromMilliseconds(500)
     $script:updateTimer.Add_Tick({
+        # Drain log queue -- update txt_UpdateProgress with the latest [UPDATE] message
+        $latestUpdateMsg = $null
+        $queueMsg = $null
+        while ($script:LogQueue.TryDequeue([ref]$queueMsg)) {
+            if ($queueMsg -match '^\[UPDATE\]\s*(.+)$') {
+                $latestUpdateMsg = $Matches[1]
+            }
+            # Non-update messages still get written to the log file
+            if ($queueMsg -notmatch '^\[UPDATE\]') {
+                try { Write-DATLogEntry -Value $queueMsg -Severity 1 } catch { }
+            }
+        }
+        if ($latestUpdateMsg) {
+            $script:txt_UpdateProgress.Text = $latestUpdateMsg
+        }
+
         if ($script:updateAsyncResult.IsCompleted) {
             $script:updateTimer.Stop()
+            # Final drain
+            while ($script:LogQueue.TryDequeue([ref]$queueMsg)) {
+                if ($queueMsg -match '^\[UPDATE\]\s*(.+)$') {
+                    $latestUpdateMsg = $Matches[1]
+                }
+            }
+            if ($latestUpdateMsg) {
+                $script:txt_UpdateProgress.Text = $latestUpdateMsg
+            }
+
             try {
                 $updateResult = $script:updateJob.EndInvoke($script:updateAsyncResult)
                 if ($script:updateJob.Streams.Error.Count -gt 0) {
@@ -11842,13 +12164,10 @@ $script:btn_ApplyUpdate.Add_Click({
                     $txt_AboutVersion.Text = "Version $($global:ScriptRelease.ToString(3)) - Update installed. Restart required."
 
                     # Prompt the user to restart
-                    $restartResult = [System.Windows.MessageBox]::Show(
-                        "The Driver Automation Tool has been updated successfully.`n`nWould you like to restart now to apply the changes?",
-                        "Update Complete",
-                        [System.Windows.MessageBoxButton]::YesNo,
-                        [System.Windows.MessageBoxImage]::Information
-                    )
-                    if ($restartResult -eq [System.Windows.MessageBoxResult]::Yes) {
+                    $restartConfirmed = Show-DATConfirmDialog -Title 'Update Complete' `
+                        -Message "The Driver Automation Tool has been updated successfully.`n`nWould you like to restart now to apply the changes?" `
+                        -Type Success -ConfirmLabel 'Restart Now' -CancelLabel 'Later'
+                    if ($restartConfirmed) {
                         $launcherPath = Join-Path $global:ScriptDirectory 'Start-DriverAutomationTool.ps1'
                         if (Test-Path $launcherPath) {
                             Start-Process -FilePath 'powershell.exe' -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$launcherPath`""
@@ -11867,7 +12186,9 @@ $script:btn_ApplyUpdate.Add_Click({
                 $script:txt_UpdateProgress.Foreground = $Window.FindResource('StatusError')
             } finally {
                 $script:updateJob.Dispose()
+                $script:updateRunspace.Dispose()
                 $script:updateJob = $null
+                $script:updateRunspace = $null
                 $script:updateAsyncResult = $null
                 $script:btn_ApplyUpdate.IsEnabled = $true
                 $btn_CheckUpdate.IsEnabled = $true
@@ -12733,7 +13054,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.14"
+$script:versionString = "v10.0.15"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

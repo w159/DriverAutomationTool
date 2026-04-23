@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.14.0
+     Version:       10.0.15.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.14.0"
+[version]$global:ScriptRelease = "10.0.15.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -3214,6 +3214,22 @@ function Update-DATApplication {
             throw "Extracted archive does not contain an expected root folder"
         }
 
+        # The GitHub archive nests the app inside a subfolder (e.g. 'Driver Automation Tool').
+        # Detect the correct source by looking for the launcher script.
+        $sourceDir = $extractedRoot.FullName
+        $launcherName = 'Start-DriverAutomationTool.ps1'
+        if (-not (Test-Path (Join-Path $sourceDir $launcherName))) {
+            $subFolder = Get-ChildItem -Path $sourceDir -Directory | Where-Object {
+                Test-Path (Join-Path $_.FullName $launcherName)
+            } | Select-Object -First 1
+            if ($subFolder) {
+                $sourceDir = $subFolder.FullName
+                Write-DATLogEntry -Value "[Update] App files located in subfolder: $($subFolder.Name)" -Severity 1
+            } else {
+                throw "Cannot locate $launcherName in extracted archive"
+            }
+        }
+
         # Back up current version
         $backupDir = Join-Path $env:TEMP "DATBackup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
         Write-DATLogEntry -Value "[Update] Backing up current installation to $backupDir..." -Severity 1
@@ -3222,7 +3238,7 @@ function Update-DATApplication {
         # Copy new files over existing installation (preserve user data like Settings, Logs, Temp)
         $preserveFolders = @('Settings', 'Logs', 'Temp', 'Packages')
         Write-DATLogEntry -Value "[Update] Applying update files..." -Severity 1
-        $sourceItems = Get-ChildItem -Path $extractedRoot.FullName
+        $sourceItems = Get-ChildItem -Path $sourceDir
         foreach ($item in $sourceItems) {
             if ($item.PSIsContainer -and $item.Name -in $preserveFolders) {
                 # Merge -- don't overwrite user data folders, but add new files
