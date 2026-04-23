@@ -4260,11 +4260,10 @@ $btn_RefreshModels.Add_Click({
                     }
                 }
                 "Microsoft" {
-                    # OEM LINK Temporary MS Hard Link
-                    $MSLink = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDMSDrivers.xml"
+                    $MSLink = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
                     Write-Log "Microsoft catalog URL: $MSLink"
                     try {
-                        $MSFilePath = Join-Path $TempDir "OSDMSDrivers.xml"
+                        $MSFilePath = Join-Path $TempDir "OSDCatalogMicrosoftDriverPack.json"
                         if (Test-CatalogFresh -FilePath $MSFilePath) {
                             Write-Log "Using cached Microsoft catalog (less than 24h old)."
                             $LogQueue.Enqueue('[SOURCE:Microsoft:Cached]')
@@ -4276,19 +4275,19 @@ $btn_RefreshModels.Add_Click({
                         }
                         $MSFileSize = [math]::Round((Get-Item $MSFilePath).Length / 1KB, 1)
                         Write-Log "Reading Microsoft catalog from $MSFilePath ($($MSFileSize) KB)"
-                        $MSModelList = Import-Clixml -Path $MSFilePath
+                        $MSModelList = Get-Content -Path $MSFilePath -Raw | ConvertFrom-Json
                         $MSModelTotal = @($MSModelList).Count
                         Write-Log "Microsoft catalog contains $MSModelTotal total entries."
                         if ($MSModelTotal -gt 0) {
                             $sampleProperties = ($MSModelList | Select-Object -First 1).PSObject.Properties.Name -join ', '
                             Write-Log "Microsoft catalog properties: $sampleProperties"
-                            $availableOSVersions = ($MSModelList | Select-Object -ExpandProperty OSVersion -ErrorAction SilentlyContinue | Sort-Object -Unique) -join ', '
+                            $availableOSVersions = ($MSModelList | Select-Object -ExpandProperty OperatingSystem -ErrorAction SilentlyContinue | Sort-Object -Unique) -join ', '
                             Write-Log "Microsoft catalog OS versions: $availableOSVersions"
                         }
-                        Write-Log "Filtering Microsoft models where OSVersion matches '$WindowsVersion'..."
+                        Write-Log "Filtering Microsoft models where OperatingSystem matches '$WindowsVersion'..."
                         $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
                         Write-Log "Microsoft architecture filter: $MSArchFilter (from $Architecture)"
-                        $MSFiltered = $MSModelList | Where-Object { $_.OSVersion -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
+                        $MSFiltered = $MSModelList | Where-Object { $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter }
                         $MSModels = $MSFiltered | Group-Object -Property Model
                         $count = @($MSModels).Count
                         Write-Log "Microsoft: Found $count matching models after filtering." -Level $(if ($count -gt 0) { 'Success' } else { 'Warn' })
@@ -4297,7 +4296,7 @@ $btn_RefreshModels.Add_Click({
                             Write-Log "No Microsoft models matched OSVersion='$WindowsVersion'. Check catalog OS versions above." -Level Warn
                         }
                         foreach ($MSModelGroup in $MSModels) {
-                            $products = ($MSModelGroup.Group | Select-Object -ExpandProperty Product -Unique) -join ','
+                            $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
                             $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
                             $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
                             $OEMSupportedModels += [PSCustomObject]@{
@@ -13073,7 +13072,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.16"
+$script:versionString = "v10.0.17"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

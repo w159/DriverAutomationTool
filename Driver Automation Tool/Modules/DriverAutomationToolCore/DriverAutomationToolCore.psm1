@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.16.0
+     Version:       10.0.17.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.16.0"
+[version]$global:ScriptRelease = "10.0.17.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -530,20 +530,19 @@ function Get-DATOEMModelInfo {
                 }
             }
             "Microsoft" {
-                # OEM LINK Temporary MS Hard Link
-                $MicrosoftXMLSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDMSDrivers.xml"
-                $MicrosoftXMLPath = Join-Path $global:TempDirectory "OSDMSDrivers.xml"
+                $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
+                $MicrosoftCatalogPath = Join-Path $global:TempDirectory "OSDCatalogMicrosoftDriverPack.json"
                 try {
                     $proxyParams = Get-DATWebRequestProxy
-                    Invoke-WebRequest -Uri $MicrosoftXMLSource -OutFile $MicrosoftXMLPath -UseBasicParsing -TimeoutSec 30 @proxyParams
-                    $global:MicrosoftModelList = Import-Clixml -Path $MicrosoftXMLPath
+                    Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
+                    $global:MicrosoftModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
                     $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
                     $MSFiltered = $global:MicrosoftModelList | Where-Object {
-                        $_.OSVersion -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
+                        $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
                     }
                     $MicrosoftModels = $MSFiltered | Group-Object -Property Model
                     foreach ($MSModelGroup in $MicrosoftModels) {
-                        $products = ($MSModelGroup.Group | Select-Object -ExpandProperty Product -Unique) -join ','
+                        $products = ($MSModelGroup.Group | ForEach-Object { $_.SystemId } | Select-Object -Unique) -join ','
                         $latestEntry = $MSModelGroup.Group | Sort-Object { try { [datetime]$_.ReleaseDate } catch { [datetime]::MinValue } } -Descending | Select-Object -First 1
                         $msVersion = if ($latestEntry.ReleaseDate) { $latestEntry.ReleaseDate } else { '' }
                         $OEMSupportedModels += [PSCustomObject]@{
@@ -3597,6 +3596,17 @@ function Invoke-DATOEMDownloadModule {
             Write-DATLogEntry -Value "[HP] Concurrent downloads: $HPConcurrentDownloads" -Severity 1
 
             # ── Step 1: Discover SoftPaqs using New-HPDriverPack -WhatIf ──────────
+            # Pre-flight: verify that HPCMSL supports the requested OS version
+            $hpDPCmd = Get-Command -Name New-HPDriverPack -ErrorAction SilentlyContinue
+            if ($hpDPCmd) {
+                $osVerAttr = $hpDPCmd.Parameters['OSVer'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }
+                if ($osVerAttr -and $WindowsBuild -notin $osVerAttr.ValidValues) {
+                    $supportedValues = $osVerAttr.ValidValues -join ', '
+                    Write-DATLogEntry -Value "[HP] HPCMSL does not support OSVer '$WindowsBuild'. Supported values: $supportedValues. Update HPCMSL: Install-Module HPCMSL -Force -AllowClobber" -Severity 3
+                    throw "HPCMSL does not support OS version '$WindowsBuild'. Update HPCMSL to the latest version: Install-Module -Name HPCMSL -Force -AllowClobber"
+                }
+            }
+
             $SoftPaqIDs = @()
             $DiscoveryPlatformID = $null
 
@@ -3637,6 +3647,10 @@ function Invoke-DATOEMDownloadModule {
                         Write-DATLogEntry -Value "[HP] No SoftPaqs found for platform $PlatformID -- trying next" -Severity 2
                     }
                 } catch {
+                    if ($_.Exception.Message -match 'does not belong to the set') {
+                        Write-DATLogEntry -Value "[HP] HPCMSL does not support OSVer '$WindowsBuild'. Update HPCMSL: Install-Module HPCMSL -Force -AllowClobber" -Severity 3
+                        throw "HPCMSL does not support OS version '$WindowsBuild'. Update HPCMSL to the latest version: Install-Module -Name HPCMSL -Force -AllowClobber"
+                    }
                     Write-DATLogEntry -Value "[HP] WhatIf failed for ${PlatformID}: $($_.Exception.Message)" -Severity 2
                 }
             }
@@ -3992,22 +4006,21 @@ function Invoke-DATOEMDownloadModule {
             }
         }
         "Microsoft" {
-            $MicrosoftXMLPath = Join-Path $TempDirectory "OSDMSDrivers.xml"
-            if (-not (Test-Path $MicrosoftXMLPath)) {
-                # OEM LINK Temporary MS Hard Link
-                $MicrosoftXMLSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDMSDrivers.xml"
+            $MicrosoftCatalogPath = Join-Path $TempDirectory "OSDCatalogMicrosoftDriverPack.json"
+            if (-not (Test-Path $MicrosoftCatalogPath)) {
+                $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
                 Write-DATLogEntry -Value "[$OEM] Downloading Microsoft catalog..." -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Microsoft driver catalog..." -Type String
                 $proxyParams = Get-DATWebRequestProxy
-                Invoke-WebRequest -Uri $MicrosoftXMLSource -OutFile $MicrosoftXMLPath -UseBasicParsing -TimeoutSec 30 @proxyParams
+                Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
             } else {
-                Write-DATLogEntry -Value "[$OEM] Using cached Microsoft catalog: $MicrosoftXMLPath" -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Using cached Microsoft catalog: $MicrosoftCatalogPath" -Severity 1
             }
 
-            $MSModelList = Import-Clixml -Path $MicrosoftXMLPath
+            $MSModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
             $MSArchFilter = if ($Architecture -eq 'Arm64') { 'arm64' } else { 'amd64' }
             $matchingModel = $MSModelList | Where-Object {
-                $_.Model -eq $Model -and $_.OSVersion -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
+                $_.Model -eq $Model -and $_.OperatingSystem -match $WindowsVersion -and $_.OSArchitecture -eq $MSArchFilter
             } | Select-Object -First 1
 
             if ($null -ne $matchingModel -and -not [string]::IsNullOrEmpty($matchingModel.Url)) {
