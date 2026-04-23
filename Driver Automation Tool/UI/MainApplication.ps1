@@ -4540,7 +4540,7 @@ $txt_ModelSearch.Add_TextChanged({
     } else {
         $view.Filter = [System.Predicate[object]]{
             param($item)
-            $item.Model -like "*$searchText*" -or $item.OEM -like "*$searchText*"
+            $item.Model -like "*$searchText*" -or $item.OEM -like "*$searchText*" -or $item.Baseboards -like "*$searchText*"
         }
     }
     $grid_Models.ItemsSource = $view
@@ -4821,7 +4821,7 @@ $btn_Build.Add_Click({
     $script:BuildPS = [powershell]::Create()
     $script:BuildPS.Runspace = $script:BuildRunspace
     [void]$script:BuildPS.AddScript({
-        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
+        param($ModulePath, $ScriptDir, $RegPath, $RunningMode, $SelectedModels, $StoragePath, $PackagePath, $IntuneToken, $DisableToast, $SiteServer, $SiteCode, $PackageType, $DPGroups, $DPs, $DistPriority, $EnableBDR, $DebugBuildPath, $CustomBrandingPath, $HPPasswordBinPath, $ToastTimeoutAction, $MaxDeferrals, $TeamsWebhookUrl, $TeamsNotificationsEnabled, $CustomToastTitle, $CustomToastBody)
         try {
         Import-Module $ModulePath -Force
         $procParams = @{
@@ -4847,6 +4847,7 @@ $btn_Build.Add_Click({
         if ($DPGroups -and $DPGroups.Count -gt 0) { $procParams['DistributionPointGroups'] = $DPGroups }
         if ($DPs -and $DPs.Count -gt 0) { $procParams['DistributionPoints'] = $DPs }
         if (-not [string]::IsNullOrEmpty($DistPriority)) { $procParams['DistributionPriority'] = $DistPriority }
+        if ($EnableBDR) { $procParams['EnableBinaryDeltaReplication'] = $true }
         if ($TeamsNotificationsEnabled -and -not [string]::IsNullOrEmpty($TeamsWebhookUrl)) {
             $procParams['TeamsNotificationsEnabled'] = $true
             $procParams['TeamsWebhookUrl'] = $TeamsWebhookUrl
@@ -4926,6 +4927,8 @@ $btn_Build.Add_Click({
     [void]$script:BuildPS.AddArgument($cmDPGroups)
     [void]$script:BuildPS.AddArgument($cmDPs)
     [void]$script:BuildPS.AddArgument($cmDistPriority)
+    $cmEnableBDR = ($chk_BinaryDiffReplication.IsChecked -eq $true)
+    [void]$script:BuildPS.AddArgument($cmEnableBDR)
     [void]$script:BuildPS.AddArgument($debugBuildPath)
     [void]$script:BuildPS.AddArgument($script:CustomBrandingImagePath)
     [void]$script:BuildPS.AddArgument($script:HPPasswordBinPath)
@@ -13072,7 +13075,7 @@ if (Test-Path $logoPath) {
 
 # Read version from module manifest
 $manifestPath = Join-Path $AppRoot "Modules\DriverAutomationToolCore\DriverAutomationToolCore.psd1"
-$script:versionString = "v10.0.17"
+$script:versionString = "v10.0.18"
 if (Test-Path $manifestPath) {
     $manifestData = Import-PowerShellDataFile $manifestPath
     $ver = [version]$manifestData.ModuleVersion

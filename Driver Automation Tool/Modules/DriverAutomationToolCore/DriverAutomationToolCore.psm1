@@ -4,7 +4,7 @@
      Organization:  MSEndpointMgr / Patch My PC
      Filename:      DriverAutomationToolCore.psm1
      Purpose:       Core functions for Driver Automation Tool v2.0
-     Version:       10.0.17.0
+     Version:       10.0.18.0
     ===========================================================================
 #>
 
@@ -21,7 +21,7 @@ if ($PSVersionTable.PSVersion.Major -le 5) {
 
 #region Variables
 
-[version]$global:ScriptRelease = "10.0.17.0"
+[version]$global:ScriptRelease = "10.0.18.0"
 $global:ScriptBuildDate = "20-04-2026"
 $global:ReleaseNotesURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/DriverAutomationToolNotes.txt"
 $OEMLinksURL = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OEMLinks.xml"
@@ -430,6 +430,8 @@ function Get-DATOEMModelInfo {
                 $HPCabFile = [string]($HPXMLCabinetSource | Split-Path -Leaf)
                 $HPXMLFile = $HPCabFile.TrimEnd(".cab") + ".xml"
                 try {
+                    Write-DATLogEntry -Value "[HP] Catalog cab path: $(Join-Path $global:TempDirectory $HPCabFile)" -Severity 1
+                    Write-DATLogEntry -Value "[HP] Catalog XML extract path: $(Join-Path $global:TempDirectory $HPXMLFile)" -Severity 1
                     Invoke-DATContentDownload -DownloadURL $HPXMLCabinetSource -DownloadDestination $global:TempDirectory
                     Expand "$global:TempDirectory\$HPCabFile" -F:* "$global:TempDirectory" -R | Out-Null
                     [xml]$HPModelXML = Get-Content -Path (Join-Path -Path $global:TempDirectory -ChildPath $HPXMLFile) -Raw
@@ -458,6 +460,8 @@ function Get-DATOEMModelInfo {
                 $DellXMLFile = $DellCabFile.TrimEnd(".cab") + ".xml"
                 $DellWindowsVersion = $WindowsVersion.Replace(" ", "")
                 try {
+                    Write-DATLogEntry -Value "[Dell] Catalog cab path: $(Join-Path $global:TempDirectory $DellCabFile)" -Severity 1
+                    Write-DATLogEntry -Value "[Dell] Catalog XML extract path: $(Join-Path $global:TempDirectory $DellXMLFile)" -Severity 1
                     if (-not (Test-Path (Join-Path $global:TempDirectory $DellCabFile))) {
                         Invoke-DATContentDownload -DownloadURL $DellXMLCabinetSource -DownloadDestination $global:TempDirectory
                     }
@@ -493,6 +497,7 @@ function Get-DATOEMModelInfo {
                 $LenovoXMLSource = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link | Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
                 $LenovoXMLCabFile = $LenovoXMLSource | Split-Path -Leaf
                 try {
+                    Write-DATLogEntry -Value "[Lenovo] Catalog download path: $(Join-Path $global:TempDirectory $LenovoXMLCabFile)" -Severity 1
                     if (-not (Test-Path "$global:TempDirectory\$LenovoXMLCabFile")) {
                         Invoke-DATContentDownload -DownloadURL $LenovoXMLSource -DownloadDestination $global:TempDirectory
                     }
@@ -533,6 +538,7 @@ function Get-DATOEMModelInfo {
                 $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
                 $MicrosoftCatalogPath = Join-Path $global:TempDirectory "OSDCatalogMicrosoftDriverPack.json"
                 try {
+                    Write-DATLogEntry -Value "[Microsoft] Catalog download path: $MicrosoftCatalogPath" -Severity 1
                     $proxyParams = Get-DATWebRequestProxy
                     Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
                     $global:MicrosoftModelList = Get-Content -Path $MicrosoftCatalogPath -Raw | ConvertFrom-Json
@@ -562,6 +568,7 @@ function Get-DATOEMModelInfo {
                 $AcerXMLSource = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Acer" }).Link | Where-Object { $_.Type -eq "XMLSource" } | Select-Object -ExpandProperty URL -First 1
                 $AcerXMLFile = [string]($AcerXMLSource | Split-Path -Leaf)
                 try {
+                    Write-DATLogEntry -Value "[Acer] Catalog download path: $(Join-Path $global:TempDirectory $AcerXMLFile)" -Severity 1
                     if (-not (Test-Path "$global:TempDirectory\$AcerXMLFile")) {
                         Invoke-DATContentDownload -DownloadURL $AcerXMLSource -DownloadDestination $global:TempDirectory
                     }
@@ -1910,6 +1917,7 @@ function New-DATConfigMgrPkg {
         [string[]]$DistributionPointGroups,
         [string[]]$DistributionPoints,
         [ValidateSet('High','Normal','Low')][string]$Priority = 'Normal',
+        [switch]$EnableBinaryDeltaReplication,
         [switch]$ForceUpdate
     )
 
@@ -1970,6 +1978,17 @@ function New-DATConfigMgrPkg {
             $pkgWmi.Description = "Models included: $Baseboards"
             $pkgWmi.Put() | Out-Null
             Write-DATLogEntry -Value "- [ConfigMgr] Package $pkgId metadata updated" -Severity 1
+
+            # Enable or disable Binary Differential Replication via PkgFlags
+            if ($EnableBinaryDeltaReplication) {
+                $pkgWmi.Get()
+                $bdrFlag = 0x04000000
+                if (($pkgWmi.PkgFlags -band $bdrFlag) -eq 0) {
+                    $pkgWmi.PkgFlags = $pkgWmi.PkgFlags -bor $bdrFlag
+                    $pkgWmi.Put() | Out-Null
+                    Write-DATLogEntry -Value "- [ConfigMgr] Binary Differential Replication enabled on $pkgId" -Severity 1
+                }
+            }
 
             # Trigger content redistribution via RefreshPkgSource
             try {
@@ -2057,6 +2076,15 @@ function New-DATConfigMgrPkg {
         $packageId = $putResult.RelativePath -replace '.*PackageID="([^"]+)".*', '$1'
 
         Write-DATLogEntry -Value "- [ConfigMgr] Created package $packageId" -Severity 1
+
+        # Enable Binary Differential Replication via PkgFlags
+        if ($EnableBinaryDeltaReplication) {
+            $newPkg.Get()
+            $bdrFlag = 0x04000000
+            $newPkg.PkgFlags = $newPkg.PkgFlags -bor $bdrFlag
+            $newPkg.Put() | Out-Null
+            Write-DATLogEntry -Value "- [ConfigMgr] Binary Differential Replication enabled on $packageId" -Severity 1
+        }
 
         # --- Stage 4: Move package into console folder (Driver Packages\OEM or BIOS Packages\OEM) ---
         try {
@@ -2238,6 +2266,7 @@ function Start-DATModelProcessing {
         [string[]]$DistributionPointGroups,
         [string[]]$DistributionPoints,
         [string]$DistributionPriority = 'Normal',
+        [switch]$EnableBinaryDeltaReplication,
         [switch]$DisableToast,
         [ValidateSet('RemindMeLater','InstallNow')][string]$ToastTimeoutAction = 'RemindMeLater',
         [int]$MaxDeferrals = 0,
@@ -2490,6 +2519,7 @@ function Start-DATModelProcessing {
                                 $cmParams['DistributionPoints'] = $DistributionPoints
                             }
                             if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
+                            if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
                             $cmResult = New-DATConfigMgrPkg @cmParams
 
                             if ($cmResult) {
@@ -2731,6 +2761,7 @@ function Start-DATModelProcessing {
                                         $cmParams['DistributionPoints'] = $DistributionPoints
                                     }
                                     if ($modelForceUpdate) { $cmParams['ForceUpdate'] = $true }
+                                    if ($EnableBinaryDeltaReplication) { $cmParams['EnableBinaryDeltaReplication'] = $true }
                                     $cmResult = New-DATConfigMgrPkg @cmParams
 
                                     if ($cmResult) {
@@ -3500,12 +3531,16 @@ function Invoke-DATOEMDownloadModule {
 
             if (-not (Test-Path $DellXMLPath)) {
                 Write-DATLogEntry -Value "[$OEM] Downloading Dell catalog..." -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Catalog cab path: $DellCabPath" -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Catalog XML extract path: $DellXMLPath" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Dell driver catalog..." -Type String
                 if (-not (Test-Path $DellCabPath)) {
                     $proxyParams = Get-DATWebRequestProxy
                     Invoke-WebRequest -Uri $DellLink -OutFile $DellCabPath -UseBasicParsing -TimeoutSec 60 @proxyParams
                 }
                 & expand.exe "$DellCabPath" -F:* "$TempDirectory" -R 2>&1 | Out-Null
+            } else {
+                Write-DATLogEntry -Value "[$OEM] Using cached Dell catalog: $DellXMLPath" -Severity 1
             }
 
             if (-not (Test-Path $DellXMLPath)) { throw "Dell catalog XML not found after extraction" }
@@ -3796,7 +3831,7 @@ function Invoke-DATOEMDownloadModule {
                     Write-DATLogEntry -Value "[HP] Retrying SP$spId download..." -Severity 1
 
                     try {
-                        Get-Softpaq -Number $spId -SaveAs $savePath -MaxRetries 3 -ErrorAction Stop
+                        $null = Get-Softpaq -Number $spId -SaveAs $savePath -MaxRetries 3 -ErrorAction Stop
                         $completedDownloads++
                         Write-DATLogEntry -Value "[HP] SP$spId retry succeeded" -Severity 1
                     } catch {
@@ -3943,7 +3978,7 @@ function Invoke-DATOEMDownloadModule {
                 Set-DATRegistryValue -Name "RunningMode" -Value "Packaging" -Type String
                 Write-DATLogEntry -Value "[HP] Creating WIM package from staging directory..." -Severity 1
 
-                Invoke-DATDriverFilePackaging -FilePath $HPStagingDir -OEM $OEM -Model $Model `
+                $null = Invoke-DATDriverFilePackaging -FilePath $HPStagingDir -OEM $OEM -Model $Model `
                     -OS "$WindowsVersion $WindowsBuild" -Destination $packageDest -Platform $packagingPlatform
             }
 
@@ -3951,7 +3986,7 @@ function Invoke-DATOEMDownloadModule {
             Write-DATLogEntry -Value "[HP] Driver package process completed successfully" -Severity 1 -UpdateUI
 
             # HP handles its own multi-SoftPaq download -- skip common single-file download path
-            return
+            return $null
         }
         "Lenovo" {
             $LenovoLink = ($OEMLinks.OEM.Manufacturer | Where-Object { $_.Name -match "Lenovo" }).Link |
@@ -3963,8 +3998,11 @@ function Invoke-DATOEMDownloadModule {
 
             if (-not (Test-Path $LenovoFilePath)) {
                 Write-DATLogEntry -Value "[$OEM] Downloading Lenovo catalog..." -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Catalog download path: $LenovoFilePath" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Lenovo driver catalog..." -Type String
                 Invoke-CatalogDownload -Uri $LenovoLink -OutFile $LenovoFilePath
+            } else {
+                Write-DATLogEntry -Value "[$OEM] Using cached Lenovo catalog: $LenovoFilePath" -Severity 1
             }
 
             [xml]$LenovoModelXML = Get-Content -Path $LenovoFilePath
@@ -3979,9 +4017,9 @@ function Invoke-DATOEMDownloadModule {
                 $sccmNode = $matchingModel.SCCM | Where-Object { $_.Version -eq $WindowsBuild -and $_.OS -eq $WinVer } | Select-Object -First 1
                 if ($null -eq $sccmNode) { $sccmNode = $matchingModel.SCCM }
                 $catalogVersion = if ($sccmNode.date) { $sccmNode.date } else { '' }
-                $downloadURL = $matchingModel.SCCM.'#text'
+                $downloadURL = $sccmNode.'#text'
                 if ($downloadURL -is [array]) { $downloadURL = $downloadURL[0] }
-                if ([string]::IsNullOrEmpty($downloadURL)) { $downloadURL = [string]$matchingModel.SCCM }
+                if ([string]::IsNullOrEmpty($downloadURL)) { $downloadURL = [string]$sccmNode }
                 $downloadFileName = $downloadURL | Split-Path -Leaf
                 Write-DATLogEntry -Value "[$OEM] Found SCCM pack: $downloadFileName" -Severity 1
                 Write-DATLogEntry -Value "[$OEM] Resolved download URL: $downloadURL" -Severity 1
@@ -4010,6 +4048,7 @@ function Invoke-DATOEMDownloadModule {
             if (-not (Test-Path $MicrosoftCatalogPath)) {
                 $MicrosoftCatalogSource = "https://raw.githubusercontent.com/maurice-daly/DriverAutomationTool/master/Data/OSDCatalogMicrosoftDriverPack.json"
                 Write-DATLogEntry -Value "[$OEM] Downloading Microsoft catalog..." -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Catalog download path: $MicrosoftCatalogPath" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Microsoft driver catalog..." -Type String
                 $proxyParams = Get-DATWebRequestProxy
                 Invoke-WebRequest -Uri $MicrosoftCatalogSource -OutFile $MicrosoftCatalogPath -UseBasicParsing -TimeoutSec 30 @proxyParams
@@ -4042,6 +4081,7 @@ function Invoke-DATOEMDownloadModule {
 
             if (-not (Test-Path $AcerFilePath)) {
                 Write-DATLogEntry -Value "[$OEM] Downloading Acer catalog..." -Severity 1
+                Write-DATLogEntry -Value "[$OEM] Catalog download path: $AcerFilePath" -Severity 1
                 Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading Acer driver catalog..." -Type String
                 Invoke-CatalogDownload -Uri $AcerLink -OutFile $AcerFilePath
             } else {
@@ -7564,6 +7604,7 @@ function Get-DATBiosCatalog {
         Write-DATLogEntry -Value "[BIOS] Using cached BIOS catalog (less than 24h old)" -Severity 1
     } else {
         Write-DATLogEntry -Value "[BIOS] Downloading BIOS catalog..." -Severity 1
+        Write-DATLogEntry -Value "[BIOS] Catalog cache path: $cachePath" -Severity 1
         Set-DATRegistryValue -Name "RunningMessage" -Value "Downloading BIOS catalog..." -Type String
 
         $downloaded = $false
@@ -7645,6 +7686,7 @@ function Find-DATBiosPackage {
 
         if (-not (Test-Path $acerFilePath)) {
             Write-DATLogEntry -Value "[BIOS] Downloading Acer catalog for BIOS lookup..." -Severity 1
+            Write-DATLogEntry -Value "[BIOS] Acer catalog download path: $acerFilePath" -Severity 1
             try {
                 $proxyParams = Get-DATWebRequestProxy
                 Invoke-WebRequest -Uri $acerCatalogUrl -OutFile $acerFilePath -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop @proxyParams

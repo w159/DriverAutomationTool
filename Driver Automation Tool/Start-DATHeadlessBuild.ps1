@@ -178,6 +178,7 @@ switch ($config.Platform) {
                 $processingParams['DistributionPoints'] = $config.ConfigMgr.DistributionPoints
             }
             if ($config.ConfigMgr.DistributionPriority) { $processingParams['DistributionPriority'] = $config.ConfigMgr.DistributionPriority }
+            if ($config.ConfigMgr.EnableBinaryDeltaReplication -eq $true) { $processingParams['EnableBinaryDeltaReplication'] = $true }
         }
     }
 }

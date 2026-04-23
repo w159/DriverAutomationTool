@@ -3,6 +3,11 @@ Release Notes
 IMPORTANT
 - DAT Downloads have been moved to GitHub - https://github.com/maurice-daly/DriverAutomationTool
 
+Version 10.0.18
+Bug fixes
+- Fixed Lenovo OS matching issue
+- Fixed Binary Differential Replication issue
+
 Version 10.0.17
 Microsoft download fixes (source compatibility)
 
